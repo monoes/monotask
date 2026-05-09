@@ -826,7 +826,7 @@ pub async fn sync_board(
             let author_label = format!("@{}", login);
             let body_text = gh_comment.body.as_deref().unwrap_or("");
             let text = format!("{}: {}", author_label, body_text);
-            match monotask_core::comment::add_comment(doc, &card_id, &text, &author_label) {
+            match monotask_core::comment::add_comment(doc, &card_id, &text, &author_label, None, None, None) {
                 Ok(local) => {
                     set_comment_github_id(doc, &card_id, &local.id, gh_comment.id);
                     if !avatar_url.is_empty() {
@@ -1129,7 +1129,7 @@ pub async fn sync_single_card(
         let body_text = gh_comment.body.as_deref().unwrap_or("");
         let text = format!("{}: {}", author_label, body_text);
         eprintln!("[sync_single_card]   importing comment from @{login}: {:?}", &body_text[..body_text.len().min(60)]);
-        match monotask_core::comment::add_comment(doc, card_id, &text, &author_label) {
+        match monotask_core::comment::add_comment(doc, card_id, &text, &author_label, None, None, None) {
             Ok(local) => {
                 set_comment_github_id(doc, card_id, &local.id, gh_comment.id);
                 if !avatar_url.is_empty() {

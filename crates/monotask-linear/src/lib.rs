@@ -857,7 +857,7 @@ pub async fn sync_board(
             let author_label = format!("@{}", author);
             let text = format!("{}: {}", author_label, comment.body);
 
-            match monotask_core::comment::add_comment(doc, &card_id, &text, &author_label) {
+            match monotask_core::comment::add_comment(doc, &card_id, &text, &author_label, None, None, None) {
                 Ok(local) => {
                     set_comment_linear_id(doc, &card_id, &local.id, &comment.id);
                     result.pulled += 1;
@@ -1136,7 +1136,7 @@ pub async fn sync_single_linear_card(
             if already_imported.contains_key(&comment.id) { continue; }
             let author = comment.user.as_ref().map(|u| u.name.as_str()).unwrap_or("Linear user");
             let text = format!("@{}: {}", author, comment.body);
-            match monotask_core::comment::add_comment(doc, card_id, &text, &format!("@{author}")) {
+            match monotask_core::comment::add_comment(doc, card_id, &text, &format!("@{author}"), None, None, None) {
                 Ok(local) => {
                     set_comment_linear_id(doc, card_id, &local.id, &comment.id);
                     result.pulled += 1;

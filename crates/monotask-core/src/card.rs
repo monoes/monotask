@@ -424,6 +424,18 @@ pub fn set_due_date(doc: &mut AutoCommit, card_id: &str, due_date: Option<&str>)
     Ok(())
 }
 
+pub fn clear_priority_fields(doc: &mut AutoCommit, card_id: &str) -> Result<()> {
+    let cards_map = crate::get_cards_map(doc)?;
+    let card_obj = match doc.get(&cards_map, card_id)? {
+        Some((_, id)) => id,
+        None => return Err(crate::Error::NotFound(card_id.into())),
+    };
+    let _ = doc.delete(&card_obj, "impact");
+    let _ = doc.delete(&card_obj, "effort");
+    let _ = doc.delete(&card_obj, "direct_priority");
+    Ok(())
+}
+
 pub fn set_direct_priority(doc: &mut AutoCommit, card_id: &str, value: Option<u8>) -> Result<()> {
     let cards_map = crate::get_cards_map(doc)?;
     let card_obj = match doc.get(&cards_map, card_id)? {

@@ -10,6 +10,9 @@ pub struct Comment {
     pub created_at: String,
     pub deleted: bool,
     pub avatar_url: Option<String>,
+    pub image_b64: Option<String>,
+    pub image_mime: Option<String>,
+    pub image_name: Option<String>,
 }
 
 pub fn get_comments_list(doc: &AutoCommit, card_obj: &ObjId) -> Result<ObjId> {
@@ -19,7 +22,15 @@ pub fn get_comments_list(doc: &AutoCommit, card_obj: &ObjId) -> Result<ObjId> {
     }
 }
 
-pub fn add_comment(doc: &mut AutoCommit, card_id: &str, text: &str, author_key: &str) -> Result<Comment> {
+pub fn add_comment(
+    doc: &mut AutoCommit,
+    card_id: &str,
+    text: &str,
+    author_key: &str,
+    image_b64: Option<&str>,
+    image_mime: Option<&str>,
+    image_name: Option<&str>,
+) -> Result<Comment> {
     let card_obj = crate::card::get_card_obj(doc, card_id)?;
     let comments = get_comments_list(doc, &card_obj)?;
     let idx = doc.length(&comments);
@@ -31,7 +42,22 @@ pub fn add_comment(doc: &mut AutoCommit, card_id: &str, text: &str, author_key: 
     doc.put(&c_obj, "text", text)?;
     doc.put(&c_obj, "created_at", hlc.as_str())?;
     doc.put(&c_obj, "deleted", false)?;
-    Ok(Comment { id: comment_id, author: author_key.into(), text: text.into(), created_at: hlc, deleted: false, avatar_url: None })
+    if let Some(b64) = image_b64 {
+        doc.put(&c_obj, "image_b64", b64)?;
+    }
+    if let Some(mime) = image_mime {
+        doc.put(&c_obj, "image_mime", mime)?;
+    }
+    if let Some(name) = image_name {
+        doc.put(&c_obj, "image_name", name)?;
+    }
+    Ok(Comment {
+        id: comment_id, author: author_key.into(), text: text.into(),
+        created_at: hlc, deleted: false, avatar_url: None,
+        image_b64: image_b64.map(|s| s.into()),
+        image_mime: image_mime.map(|s| s.into()),
+        image_name: image_name.map(|s| s.into()),
+    })
 }
 
 pub fn delete_comment(doc: &mut AutoCommit, card_id: &str, comment_id: &str) -> Result<()> {
@@ -101,6 +127,9 @@ pub fn list_comments(doc: &AutoCommit, card_id: &str) -> Result<Vec<Comment>> {
                     created_at: crate::get_string(doc, &c_obj, "created_at")?.unwrap_or_default(),
                     deleted: false,
                     avatar_url: crate::get_string(doc, &c_obj, "avatar_url")?.filter(|s| !s.is_empty()),
+                    image_b64: crate::get_string(doc, &c_obj, "image_b64")?.filter(|s| !s.is_empty()),
+                    image_mime: crate::get_string(doc, &c_obj, "image_mime")?.filter(|s| !s.is_empty()),
+                    image_name: crate::get_string(doc, &c_obj, "image_name")?.filter(|s| !s.is_empty()),
                 });
             }
         }

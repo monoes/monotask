@@ -114,6 +114,8 @@ enum CardCommands {
     SetEffort { board_id: String, card_id: String, #[arg(value_parser = clap::value_parser!(u8).range(0..=10))] value: u8, #[arg(long)] json: bool },
     /// Set direct priority (0–10) when impact and effort are not used. Use --clear to remove.
     SetDirectPriority { board_id: String, card_id: String, #[arg(value_parser = clap::value_parser!(u8).range(0..=10), conflicts_with = "clear")] value: Option<u8>, #[arg(long)] clear: bool, #[arg(long)] json: bool },
+    /// Clear impact, effort, and direct priority — resets scoring to unset state
+    ClearPriority { board_id: String, card_id: String, #[arg(long)] json: bool },
     SetAssignee { board_id: String, card_id: String, pubkey: String, #[arg(long)] json: bool },
     AttachImage { board_id: String, card_id: String, file: String, #[arg(long)] json: bool },
     /// List all attachments on a card
@@ -716,6 +718,13 @@ async fn main() -> anyhow::Result<()> {
                 else if let Some(p) = v { println!("Priority={p}/10"); }
                 else { println!("Priority cleared"); }
             }
+            CardCommands::ClearPriority { board_id, card_id, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                monotask_core::card::clear_priority_fields(&mut doc, &card_id)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"card_id": card_id, "cleared": true})); }
+                else { println!("Impact, effort and priority cleared for card {card_id}"); }
+            }
             CardCommands::SetAssignee { board_id, card_id, pubkey, json } => {
                 let pk = if pubkey == "none" { "" } else { &pubkey };
                 let mut doc = storage.load_board(&board_id)?;
@@ -885,7 +894,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut doc = storage.load_board(&board_id)?;
                     // Use placeholder identity until Phase 3 wires real identity
                     let author_key = "placeholder";
-                    let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, author_key)?;
+                    let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, author_key, None, None, None)?;
                     storage.save_board(&board_id, &mut doc)?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&comment)?);
@@ -900,7 +909,8 @@ async fn main() -> anyhow::Result<()> {
                         println!("{}", serde_json::to_string_pretty(&comments)?);
                     } else {
                         for c in &comments {
-                            println!("[{}] {}: {}", c.created_at, c.author, c.text);
+                            let image_tag = if c.image_b64.is_some() { " [+image]" } else { "" };
+                            println!("[{}] {}: {}{}", c.created_at, c.author, c.text, image_tag);
                         }
                     }
                 }
@@ -1630,12 +1640,12 @@ async fn cmd_linear(
 }
 
 fn print_ai_help() {
-    print!("{}", r#"
+    print!("{}", r##"
 ================================================================================
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 0.1.0
+Version: 1.1.2
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
@@ -1684,9 +1694,13 @@ COMMANDS
 --------------------------------------------------------------------------------
 
 ## init
-Usage: monotaskinit
+Usage: monotask init
 Effect: Prints the data directory path. Triggers identity creation if missing.
         Safe to run multiple times (idempotent).
+
+## version
+Usage: monotask version
+Effect: Prints the CLI version string.
 
 ────────────────────────────────────────────────────────────────────────────────
 ## board
@@ -1712,9 +1726,12 @@ Automerge CRDT documents (binary blobs in SQLite).
   Text output:  one board ID per line
   JSON output:  ["<uuid>", ...]
 
-  Example:
-    $ monotaskboard list --json
-    ["a1b2c3d4-...","e5f6a7b8-..."]
+### board rename <BOARD_ID> <NEW_TITLE>
+  --json   Output JSON
+
+  Renames an existing board.
+  Text output:  "Renamed board <id> to: <new_title>"
+  JSON output:  {"board_id":"<uuid>","title":"<new_title>"}
 
 ────────────────────────────────────────────────────────────────────────────────
 ## column
@@ -1728,10 +1745,6 @@ maintains an ordered list of card IDs.
   Text output:  "Created column: <title> (<id>)"
   JSON output:  {"id":"<uuid>","board_id":"<board_id>"}
 
-  Example:
-    $ monotaskcolumn create a1b2c3d4-... "In Progress" --json
-    {"id":"c9d0e1f2-...","board_id":"a1b2c3d4-..."}
-
 ### column list <BOARD_ID>
   --json   Output JSON
 
@@ -1741,66 +1754,71 @@ maintains an ordered list of card IDs.
 
   Note: card_ids is the ordered list of card UUIDs in each column.
 
-  Example:
-    $ monotask column list a1b2c3d4-... --json
-    [{"id":"c9d0e1f2-...","title":"Todo","card_ids":[]},
-     {"id":"d3e4f5a6-...","title":"Done","card_ids":["card-uuid-..."]}]
+### column rename <BOARD_ID> <COL_ID> <NEW_TITLE>
+  --json   Output JSON
+
+  Renames a column.
+  Text output:  "Renamed column <id> to: <new_title>"
+  JSON output:  {"col_id":"<uuid>","title":"<new_title>"}
+
+### column delete <BOARD_ID> <COL_ID>
+  --json   Output JSON
+
+  Deletes a column and all card references in it (card data is soft-deleted).
+  Text output:  "Deleted column <id>"
+  JSON output:  {"deleted":"<uuid>"}
 
 ────────────────────────────────────────────────────────────────────────────────
 ## card
 Cards are the primary work items. Each card belongs to exactly one column.
 
 Card fields:
-  id          – UUID (use this for all card operations)
-  number      – Human-readable short ID, format "<prefix>-<seq>" e.g. "a7f3-1"
-                Prefix = first 4 chars of base32-encoded creator pubkey.
-                Sequence = per-creator counter (1, 2, 3, ...).
-  title       – Short summary string
-  description – Long-form markdown text (may be empty)
-  assignees   – List of pubkey strings (future: currently unused in CLI)
-  labels      – List of label strings
-  due_date    – Optional date string "YYYY-MM-DD" or null
-  archived    – Boolean (soft-archive, hidden from normal views)
-  deleted     – Boolean (soft-delete, hidden from all views)
-  created_by  – Hex pubkey of creator
-  created_at  – HLC timestamp (see TIMESTAMPS section)
+  id             – UUID (use this for all card operations)
+  number         – Human-readable short ID "<prefix>-<seq>" e.g. "a7f3-1"
+                   Prefix = first 4 chars of base32-encoded creator pubkey.
+                   Sequence = per-creator counter (1, 2, 3, ...).
+  title          – Short summary string
+  description    – Long-form markdown text (may be empty)
+  cover_color    – Optional CSS color string for the card header
+  assignees      – List of pubkey strings
+  labels         – List of label strings
+  due_date       – Optional date string "YYYY-MM-DD" or null
+  archived       – Boolean (soft-archive, hidden from normal views)
+  deleted        – Boolean (soft-delete, hidden from all views)
+  copied_from    – UUID of source card if this card was copied, else null
+  created_by     – Hex pubkey of creator
+  created_at     – HLC timestamp (see TIMESTAMPS section)
+  impact         – Optional score 0–10 for ICE/weighted priority
+  effort         – Optional score 0–10 for ICE/weighted priority
+  direct_priority– Optional score 0–10 set without impact/effort
+  github_issue_number – Linked GitHub issue number (set by github sync)
+  parent         – {board_id, card_id} of parent card or null
+  subtasks       – [{board_id, card_id}, ...] of child cards
+
+Priority calculation (when impact and effort are set):
+  priority = floor((impact + 10 - effort) / 2)   range: 0–10
 
 ### card create <BOARD_ID> <COL_ID> <TITLE>
   --json   Output JSON
 
-  Creates a card in the specified column of the specified board.
+  Creates a card in the specified column.
   Text output:  "Created card: <title> (<id>)"
   JSON output:  {"id":"<uuid>","title":"<title>","board_id":"<board_id>","number":"<prefix>-<n>"}
-
-  Example:
-    $ monotask card create a1b2-... c9d0-... "Fix login bug" --json
-    {"id":"f1a2b3c4-...","title":"Fix login bug","board_id":"a1b2-...","number":"aaaa-1"}
-
-### card move <BOARD_ID> <CARD_ID> <TO_COL_ID>
-  --json   Output JSON
-
-  Moves a card from its current column to the target column.
-  The command automatically finds which column currently holds the card.
-  Text output:  "Moved card <card_id> to column <to_col_id>"
-  JSON output:  {"card_id":"<uuid>","to_col_id":"<uuid>"}
-
-  Example:
-    $ monotask card move a1b2-... f1a2b3c4-... d3e4f5a6-... --json
-    {"card_id":"f1a2b3c4-...","to_col_id":"d3e4f5a6-..."}
 
 ### card view <BOARD_ID> <CARD_ID>
   --json   Output JSON
 
-  Reads and prints all fields of a single card.
-  Text output:  labelled key-value lines (ID, Title, Description, Status, Due)
-  JSON output:  full Card struct as JSON
+  Reads and prints all fields of a single card, including parent and subtasks.
+  Text output:  labelled key-value lines
+  JSON output:  full Card struct plus "parent" and "subtasks" fields
 
-  JSON schema:
+  JSON schema (abbreviated):
     {
       "id": "<uuid>",
       "number": {"prefix":"<str>","seq":<int>} | null,
       "title": "<str>",
       "description": "<str>",
+      "cover_color": "<str>" | null,
       "assignees": ["<pubkey>", ...],
       "labels": ["<str>", ...],
       "due_date": "<YYYY-MM-DD>" | null,
@@ -1808,35 +1826,250 @@ Card fields:
       "deleted": false,
       "copied_from": "<uuid>" | null,
       "created_by": "<hex-pubkey>",
-      "created_at": "<hlc-timestamp>"
+      "created_at": "<hlc-timestamp>",
+      "impact": <int> | null,
+      "effort": <int> | null,
+      "direct_priority": <int> | null,
+      "github_issue_number": <int> | null,
+      "parent": {"board_id":"<uuid>","card_id":"<uuid>"} | null,
+      "subtasks": [{"board_id":"<uuid>","card_id":"<uuid>"}, ...]
     }
 
-  Example:
-    $ monotask card view a1b2-... f1a2b3c4-... --json
+### card rename <BOARD_ID> <CARD_ID> <NEW_TITLE>
+  --json   Output JSON
+
+  Renames a card.
+  Text output:  "Renamed card <id> to: <new_title>"
+  JSON output:  {"card_id":"<uuid>","title":"<new_title>"}
+
+### card delete <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Soft-deletes a card (deleted=true; hidden from all views).
+  Text output:  "Deleted card <id>"
+  JSON output:  {"deleted":"<uuid>"}
+
+### card archive <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Soft-archives a card (archived=true; hidden from normal views).
+  Text output:  "Archived card <id>"
+  JSON output:  {"archived":"<uuid>"}
+
+### card copy <BOARD_ID> <CARD_ID> <TARGET_COL_ID>
+  --json   Output JSON
+
+  Copies a card into the given column (same board). The new card has
+  copied_from set to the source card's ID.
+  Text output:  "Copied card to: <title> (<new_id>)"
+  JSON output:  {"id":"<uuid>","title":"<str>"}
+
+### card move <BOARD_ID> <CARD_ID> <TO_COL_ID>
+  --json   Output JSON
+
+  Moves a card to a different column (same board). Auto-detects current column.
+  Text output:  "Moved card <id> to column <to_col_id>"
+  JSON output:  {"card_id":"<uuid>","to_col_id":"<uuid>"}
+
+### card set-description <BOARD_ID> <CARD_ID> <TEXT>
+  --json   Output JSON
+
+  Sets the card's long-form description (markdown supported).
+  Text output:  "Updated description for card <id>"
+  JSON output:  {"card_id":"<uuid>","description":"<str>"}
+
+### card set-cover <BOARD_ID> <CARD_ID> <COLOR>
+  --json   Output JSON
+
+  Sets the card cover color. Use "none" to clear it.
+  COLOR: any CSS color string, e.g. "#e74c3c" or "red".
+  Text output:  "Set cover color for card <id>"
+  JSON output:  {"card_id":"<uuid>","color":"<str>"}
+
+### card set-due-date <BOARD_ID> <CARD_ID> <DATE>
+  --json   Output JSON
+
+  Sets the due date. DATE format: "YYYY-MM-DD". Use "none" to clear.
+  Text output:  "Set due date for card <id>"
+  JSON output:  {"card_id":"<uuid>","due_date":"<YYYY-MM-DD>" | null}
+
+### card set-priority <BOARD_ID> <CARD_ID> <PRIORITY>
+  --json   Output JSON
+
+  Sets a legacy string priority label. Use "none" to clear.
+  Prefer set-impact/set-effort or set-direct-priority for numeric scoring.
+  Text output:  "Set priority for card <id>"
+  JSON output:  {"card_id":"<uuid>","priority":"<str>"}
+
+### card set-impact <BOARD_ID> <CARD_ID> <VALUE>
+  --json   Output JSON
+
+  Sets the impact score (0–10). Priority is recomputed as
+  floor((impact + 10 - effort) / 2) and displayed immediately.
+  Text output:  "Impact=<n>, Effort=<n> → Priority=<n>"
+  JSON output:  {"card_id":"<uuid>","impact":<int>,"effort":<int>,"priority":<int>}
+
+### card set-effort <BOARD_ID> <CARD_ID> <VALUE>
+  --json   Output JSON
+
+  Sets the effort score (0–10). Priority is recomputed immediately.
+  Text output:  "Impact=<n>, Effort=<n> → Priority=<n>"
+  JSON output:  {"card_id":"<uuid>","impact":<int>,"effort":<int>,"priority":<int>}
+
+### card set-direct-priority <BOARD_ID> <CARD_ID> [VALUE]
+  --clear  Remove direct priority instead of setting it
+  --json   Output JSON
+
+  Sets or clears a direct priority (0–10) bypassing impact/effort calculation.
+  Conflicts with --clear: provide either VALUE or --clear, not both.
+  Text output:  "Priority=<n>/10"  or  "Priority cleared"
+  JSON output:  {"card_id":"<uuid>","direct_priority":<int> | null}
+
+### card clear-priority <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Clears all scoring fields: impact, effort, and direct_priority simultaneously.
+  Use this to fully reset a card to unscored state.
+  Text output:  "Impact, effort and priority cleared for card <id>"
+  JSON output:  {"card_id":"<uuid>","cleared":true}
+
+### card set-assignee <BOARD_ID> <CARD_ID> <PUBKEY>
+  --json   Output JSON
+
+  Assigns a card to the user with the given hex pubkey. Use "none" to clear.
+  Text output:  "Set assignee for card <id>"
+  JSON output:  {"card_id":"<uuid>","assignee":"<pubkey>"}
+
+### card attach-image <BOARD_ID> <CARD_ID> <FILE>
+  --json   Output JSON
+
+  Reads an image file and stores it as a base64-encoded attachment on the card.
+  The attachment gets a short ID (6-char hex) usable as "img:<id>" in markdown.
+  Supported formats: png, jpg/jpeg, gif, webp, svg.
+  Text output:  "Attached <name> as img:<id> — embed with ![<name>](img:<id>)"
+  JSON output:  {"id":"<6char>","name":"<filename>","mime":"<mimetype>","token":"img:<id>"}
+
+### card list-attachments <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Lists all attachments on a card with ID, filename, mime type, and size.
+  Text output:  "  img:<id>  <name>  (<mime>, ~<n>KB)"  per attachment
+  JSON output:  [{"id":"<str>","name":"<str>","mime":"<str>","size_b64":<int>}, ...]
+
+### card save-attachment <BOARD_ID> <CARD_ID> <ATTACHMENT_ID>
+  --output <PATH>   Save to a specific path (default: original filename)
+  --json            Output JSON
+
+  Decodes and saves an attachment to disk.
+  Text output:  "Saved <name> (<n> bytes) to <path>"
+  JSON output:  {"saved":"<path>","size":<int>}
+
+────────────────────────────────────────────────────────────────────────────────
+## card label
+Label management for cards (free-form strings).
+
+### card label add <BOARD_ID> <CARD_ID> <LABEL>
+  --json   Output JSON
+
+  Adds a label string to the card.
+  Text output:  "Added label '<label>' to card <id>"
+  JSON output:  {"card_id":"<uuid>","label":"<str>"}
+
+### card label remove <BOARD_ID> <CARD_ID> <LABEL>
+  --json   Output JSON
+
+  Removes a label string from the card.
+  JSON output:  {"card_id":"<uuid>","removed_label":"<str>"}
+
+### card label list <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Lists all labels on a card.
+  Text output:  one label per line
+  JSON output:  ["<str>", ...]
+
+────────────────────────────────────────────────────────────────────────────────
+## card comment
+Comment thread management for cards.
 
 ### card comment add <BOARD_ID> <CARD_ID> <TEXT>
   --json   Output JSON
 
-  Adds a comment to the card.
-  JSON output:  {"id":"<uuid>","author":"<str>","text":"<str>","created_at":"<hlc>","deleted":false}
+  Adds a comment to the card. Author is the local identity.
+  JSON output:  {"id":"<uuid>","author":"<str>","text":"<str>",
+                 "created_at":"<hlc>","deleted":false,
+                 "image_b64":null,"image_mime":null,"image_name":null}
 
 ### card comment list <BOARD_ID> <CARD_ID>
   --json   Output JSON
 
-  Lists all non-deleted comments on a card in chronological order.
+  Lists all non-deleted comments in chronological order.
   Text output:  "[<created_at>] <author>: <text>"
-  JSON output:  array of comment objects
+                Appends " [+image]" when the comment has an embedded image.
+  JSON output:  array of comment objects (image_b64 included when present)
 
 ### card comment delete <BOARD_ID> <CARD_ID> <COMMENT_ID>
   --json   Output JSON
 
-  Soft-deletes a comment (marked deleted=true, not returned in list).
+  Soft-deletes a comment (deleted=true, not returned in list).
   JSON output:  {"deleted":"<comment_id>"}
+
+### card comment edit <BOARD_ID> <CARD_ID> <COMMENT_ID> <NEW_TEXT>
+  --json   Output JSON
+
+  Replaces the text of an existing comment.
+  JSON output:  {"id":"<uuid>","text":"<new_text>"}
+
+────────────────────────────────────────────────────────────────────────────────
+## card subtask
+Subtask management — links cards in a parent/child hierarchy.
+
+### card subtask add <PARENT_BOARD_ID> <PARENT_CARD_ID> <CHILD_BOARD_ID> <COL_ID> <TITLE>
+  --json   Output JSON
+
+  Creates a new card in CHILD_BOARD_ID / COL_ID and links it as a subtask of
+  the parent card. The new card's parent field is set automatically.
+  CHILD_BOARD_ID may equal PARENT_BOARD_ID (single-board subtasks).
+  Text output:  "Created subtask: <title> (<id>) in board <board_id>"
+  JSON output:  {"id":"<uuid>","title":"<str>","board_id":"<uuid>"}
+
+### card subtask list <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Lists all subtask references of a card.
+  Text output:  "<card_id> (board: <board_id>)"  per subtask
+  JSON output:  [{"board_id":"<uuid>","card_id":"<uuid>"}, ...]
+
+────────────────────────────────────────────────────────────────────────────────
+## card prerequisite
+Prerequisite management — declares that one card must be done before another.
+
+### card prerequisite add <BOARD_ID> <CARD_ID> <PREREQ_BOARD_ID> <PREREQ_CARD_ID>
+  --json   Output JSON
+
+  Marks PREREQ_CARD_ID as a prerequisite of CARD_ID.
+  A card cannot be its own prerequisite.
+  Text output:  "Added prerequisite <prereq_card_id> (board: <prereq_board_id>) to card <card_id>"
+  JSON output:  {"board_id":"<uuid>","card_id":"<uuid>",
+                 "prereq_board_id":"<uuid>","prereq_card_id":"<uuid>"}
+
+### card prerequisite list <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Lists all prerequisite references for a card.
+  Text output:  "<card_id> (board: <board_id>)"  per prerequisite
+  JSON output:  [{"board_id":"<uuid>","card_id":"<uuid>"}, ...]
+
+### card prerequisite remove <BOARD_ID> <CARD_ID> <PREREQ_BOARD_ID> <PREREQ_CARD_ID>
+  --json   Output JSON
+
+  Removes a prerequisite link.
+  JSON output:  {"ok":true}
 
 ────────────────────────────────────────────────────────────────────────────────
 ## checklist
 Checklists are ordered task lists attached to a card. A card can have multiple
-checklists.
+checklists, each with its own items.
 
 ### checklist add <BOARD_ID> <CARD_ID> <TITLE>
   --json
@@ -1861,6 +2094,16 @@ checklists.
 
   Marks a checklist item as unchecked.
   JSON output:  {"checked":false,"item_id":"<uuid>"}
+
+### checklist item-delete <BOARD_ID> <CARD_ID> <CHECKLIST_ID> <ITEM_ID>
+  --json
+
+  Removes an item from a checklist permanently.
+
+### checklist delete <BOARD_ID> <CARD_ID> <CHECKLIST_ID>
+  --json
+
+  Deletes an entire checklist and all its items from the card.
 
 ────────────────────────────────────────────────────────────────────────────────
 ## space
@@ -1944,18 +2187,94 @@ Manages the local user's identity and display information.
 
 ### profile set-name <NAME>
   Sets your display name (shown to other space members).
-  Example:  monotaskprofile set-name "Alice"
 
 ### profile set-avatar <PATH>
   Reads an image file (any format) and stores it as your avatar blob.
-  Example:  monotaskprofile set-avatar ~/avatar.png
 
 ### profile import-ssh-key [PATH]
   Imports an OpenSSH Ed25519 private key as your identity.
-  If PATH is omitted, defaults to ~/.ssh/id_ed25519
-  The imported key replaces the current identity.key.
+  If PATH is omitted, defaults to ~/.ssh/id_ed25519.
   WARNING: This changes your public key — space memberships tied to the old
            key will no longer match. Run this before joining any spaces.
+
+────────────────────────────────────────────────────────────────────────────────
+## github
+Bidirectional sync with GitHub Issues. Requires a GitHub Personal Access Token.
+
+### github connect [TOKEN]
+  Saves a GitHub PAT (ghp_…) to local storage. Reads from stdin if omitted.
+  The token needs repo scope (read/write issues and comments).
+
+### github status
+  Shows the stored token (masked) and verifies connectivity.
+
+### github link <BOARD_ID> <OWNER> <REPO> --done-col <COL_ID>
+  Links a board to a GitHub repository.
+  OWNER: GitHub user or org name.
+  REPO:  Repository name.
+  --done-col: Column ID whose cards map to "closed" GitHub issues.
+
+### github unlink <BOARD_ID>
+  Removes the GitHub repository link from a board.
+
+### github sync <BOARD_ID>
+  Runs a full bidirectional sync between the board and linked GitHub repo:
+  - Pulls new/updated GitHub issues → creates/updates cards
+  - Pulls new GitHub comments → adds comments to cards (with avatar_url)
+  - Pushes new local cards → creates GitHub issues
+  - Pushes card moves to done column → closes GitHub issues
+
+────────────────────────────────────────────────────────────────────────────────
+## linear
+Bidirectional sync with Linear issues. Requires a Linear API key.
+
+### linear connect [TOKEN]
+  Saves a Linear API key to local storage. Reads from stdin if omitted.
+
+### linear status
+  Shows token status and lists accessible Linear teams.
+
+### linear teams
+  Lists all teams accessible with the saved token (id and name).
+
+### linear projects <TEAM_ID>
+  Lists all projects for the given Linear team.
+
+### linear link <BOARD_ID> --team <TEAM_ID> --project <PROJECT_ID> [--done-col <COL_ID>]
+  Links a board to a Linear project. Creates Monotask columns matching
+  the Linear workflow states automatically.
+  --done-col: Optional column to map to "completed" Linear state.
+
+### linear unlink <BOARD_ID>
+  Removes the Linear project link from a board.
+
+### linear sync <BOARD_ID>
+  Runs a full bidirectional sync:
+  - Pulls new/updated Linear issues → creates/updates cards
+  - Pulls new Linear comments → adds comments to cards
+  - Pushes new local cards → creates Linear issues
+  - Pushes card state changes → updates Linear issue state
+
+────────────────────────────────────────────────────────────────────────────────
+## sync
+Starts the P2P sync daemon using libp2p (mDNS peer discovery + TCP transport).
+The daemon keeps boards in sync with other Monotask peers on the local network.
+
+### sync [OPTIONS]
+  --detach           Run in background (writes PID to data dir)
+  --stop             Stop the running background daemon
+  --status           Show sync status (running / stopped)
+  --port <PORT>      TCP port to listen on (default: OS-assigned)
+                     Use a fixed port when peers need to dial you directly.
+  --peer <MULTIADDR> Dial a specific peer at startup, bypassing mDNS discovery.
+                     Format: /ip4/1.2.3.4/tcp/7272
+                     Repeat the flag to add multiple peers.
+
+  Example (background daemon with fixed port):
+    monotask sync --detach --port 7272
+
+  Example (connect directly to a known peer):
+    monotask sync --peer /ip4/192.168.1.10/tcp/7272
 
 --------------------------------------------------------------------------------
 TIMESTAMPS (HLC FORMAT)
@@ -1974,14 +2293,16 @@ To convert to a human date (JavaScript):
 --------------------------------------------------------------------------------
 ID FORMATS
 --------------------------------------------------------------------------------
-Board ID   : UUID v4, e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-Column ID  : UUID v4
-Card ID    : UUID v4  ← use this in all card/comment/checklist commands
-Card Number: "<base32-prefix>-<seq>"  e.g. "a7f3-42"  (human-readable only;
-             the CLI commands require the full UUID card ID, not the number)
-Space ID   : UUID v4
-Comment ID : UUID v4
-Item ID    : UUID v4
+Board ID      : UUID v4, e.g. "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+Column ID     : UUID v4
+Card ID       : UUID v4  ← use this in all card/comment/checklist commands
+Card Number   : "<base32-prefix>-<seq>" e.g. "a7f3-42"  (human-readable only;
+                CLI commands require the full UUID card ID, not the number)
+Space ID      : UUID v4
+Comment ID    : UUID v4
+Checklist ID  : UUID v4
+Item ID       : UUID v4
+Attachment ID : 6-char hex string (referenced as "img:<id>" in markdown)
 
 --------------------------------------------------------------------------------
 STORAGE
@@ -1998,11 +2319,11 @@ Database tables:
   user_profile      pk='local' | pubkey | display_name | avatar_blob | ssh_key_path
 
 Board data is stored as Automerge CRDT binary documents. The root map contains:
-  columns       – list of column objects [{id, title, card_ids[]}]
-  cards         – map of card_id → card object
-  members       – map of pubkey → member profile
-  actor_card_seq – map of pubkey → int (per-actor card counter)
-  label_definitions – map of label_id → label object
+  columns            – list of column objects [{id, title, card_ids[]}]
+  cards              – map of card_id → card object
+  members            – map of pubkey → member profile
+  actor_card_seq     – map of pubkey → int (per-actor card counter)
+  label_definitions  – map of label_id → label object
 
 --------------------------------------------------------------------------------
 COMMON AGENT WORKFLOWS
@@ -2010,23 +2331,51 @@ COMMON AGENT WORKFLOWS
 
 ### Workflow: Create a board and populate it
   BOARD=$(monotask board create "My Board" --json | jq -r .id)
-  TODO_COL=$(monotaskcolumn create $BOARD "Todo" --json | jq -r .id)
-  DOING_COL=$(monotaskcolumn create $BOARD "Doing" --json | jq -r .id)
-  DONE_COL=$(monotaskcolumn create $BOARD "Done" --json | jq -r .id)
+  TODO_COL=$(monotask column create $BOARD "Todo" --json | jq -r .id)
+  DOING_COL=$(monotask column create $BOARD "Doing" --json | jq -r .id)
+  DONE_COL=$(monotask column create $BOARD "Done" --json | jq -r .id)
   CARD=$(monotask card create $BOARD $TODO_COL "First task" --json | jq -r .id)
   monotask card view $BOARD $CARD --json
 
 ### Workflow: Inspect all cards in a board
-  # 1. List columns
   COLS=$(monotask column list $BOARD --json)
-  # 2. For each column, iterate card_ids and call card view
   echo $COLS | jq -r '.[].card_ids[]' | while read CARD_ID; do
     monotask card view $BOARD $CARD_ID --json
   done
 
+### Workflow: Score and prioritise cards
+  # ICE scoring: set impact (value) and effort (cost), priority auto-computed
+  monotask card set-impact  $BOARD $CARD 8
+  monotask card set-effort  $BOARD $CARD 3
+  # Or set priority directly without impact/effort
+  monotask card set-direct-priority $BOARD $CARD 9
+  # Reset all scoring fields
+  monotask card clear-priority $BOARD $CARD
+
+### Workflow: Attach an image and reference it in the description
+  ATT=$(monotask card attach-image $BOARD $CARD screenshot.png --json | jq -r .token)
+  monotask card set-description $BOARD $CARD "See: ![$ATT]($ATT)"
+
+### Workflow: Build a subtask hierarchy
+  PARENT=$(monotask card create $BOARD $TODO_COL "Epic: Auth" --json | jq -r .id)
+  monotask card subtask add $BOARD $PARENT $BOARD $TODO_COL "Subtask: Login page" --json
+  monotask card subtask list $BOARD $PARENT --json
+
+### Workflow: Link GitHub and sync
+  monotask github connect ghp_yourtoken
+  monotask github link $BOARD myorg myrepo --done-col $DONE_COL
+  monotask github sync $BOARD
+
+### Workflow: Link Linear and sync
+  monotask linear connect lin_api_yourkey
+  monotask linear teams
+  monotask linear projects <TEAM_ID>
+  monotask linear link $BOARD --team <TEAM_ID> --project <PROJECT_ID>
+  monotask linear sync $BOARD
+
 ### Workflow: Collaborative space setup (two users, A and B)
   # --- User A ---
-  SPACE=$(monotaskspace create "Team" | awk '{print $NF}' | tr -d '()')
+  SPACE=$(monotask space create "Team" | awk '{print $NF}' | tr -d '()')
   monotaskspace boards add $SPACE $BOARD
   monotaskspace invite export $SPACE invite.space
   # Share invite.space with User B
@@ -2075,7 +2424,7 @@ LIMITATIONS & NOTES FOR AGENTS
   instance. If using --data-dir, always pass the same path.
 
 ================================================================================
-"#);
+"##);
 }
 
 fn parse_token_or_file(input: &str) -> anyhow::Result<(String, String, Option<Vec<u8>>)> {
