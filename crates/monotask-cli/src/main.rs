@@ -98,6 +98,8 @@ enum ColumnCommands {
 #[derive(Subcommand)]
 enum CardCommands {
     Create { board_id: String, col_id: String, title: String, #[arg(long)] json: bool },
+    /// List all non-deleted cards across all columns in a board
+    List { board_id: String, #[arg(long)] json: bool },
     View { board_id: String, card_id: String, #[arg(long)] json: bool },
     Rename { board_id: String, card_id: String, new_title: String, #[arg(long)] json: bool },
     Delete { board_id: String, card_id: String, #[arg(long)] json: bool },
@@ -492,8 +494,24 @@ async fn main() -> anyhow::Result<()> {
             }
             BoardCommands::List { json } => {
                 let ids = storage.list_board_ids()?;
-                if json { println!("{}", serde_json::to_string_pretty(&ids)?); }
-                else { for id in &ids { println!("{id}"); } }
+                if json {
+                    let boards: Vec<serde_json::Value> = ids.iter().map(|id| {
+                        let title = storage.load_board(id)
+                            .ok()
+                            .and_then(|doc| monotask_core::board::get_board_title(&doc).ok())
+                            .unwrap_or_default();
+                        serde_json::json!({"id": id, "title": title})
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&boards)?);
+                } else {
+                    for id in &ids {
+                        let title = storage.load_board(id)
+                            .ok()
+                            .and_then(|doc| monotask_core::board::get_board_title(&doc).ok())
+                            .unwrap_or_default();
+                        println!("{id}: {title}");
+                    }
+                }
             }
             BoardCommands::Rename { board_id, new_title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
@@ -550,6 +568,47 @@ async fn main() -> anyhow::Result<()> {
                     println!("{}", serde_json::json!({"id": card.id, "title": card.title, "board_id": board_id, "number": number_display}));
                 } else {
                     println!("Created card: {} ({})", card.title, card.id);
+                }
+            }
+            CardCommands::List { board_id, json } => {
+                use automerge::ReadDoc;
+                let doc = storage.load_board(&board_id)?;
+                let cols = monotask_core::column::list_columns(&doc)?;
+                let mut cards: Vec<(String, String, monotask_core::card::Card)> = Vec::new();
+                for col in &cols {
+                    let col_obj = match monotask_core::column::find_column_obj(&doc, &col.id)? {
+                        Some(o) => o,
+                        None => continue,
+                    };
+                    let card_ids_list = match monotask_core::column::get_card_ids_list(&doc, &col_obj) {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
+                    for i in 0..doc.length(&card_ids_list) {
+                        if let Some((automerge::Value::Scalar(s), _)) = doc.get(&card_ids_list, i)? {
+                            if let automerge::ScalarValue::Str(card_id) = s.as_ref() {
+                                if let Ok(card) = monotask_core::card::read_card(&doc, card_id.as_str()) {
+                                    if !card.deleted && !card.archived {
+                                        cards.push((col.id.clone(), col.title.clone(), card));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if json {
+                    let out: Vec<serde_json::Value> = cards.iter().map(|(col_id, col_title, card)| {
+                        let mut v = serde_json::to_value(card).unwrap_or_default();
+                        v["col_id"] = serde_json::json!(col_id);
+                        v["col_title"] = serde_json::json!(col_title);
+                        v
+                    }).collect();
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    for (_, col_title, card) in &cards {
+                        let num = card.number.as_ref().map(|n| n.to_display()).unwrap_or_default();
+                        println!("[{}] {} – {} ({})", col_title, num, card.title, card.id);
+                    }
                 }
             }
             CardCommands::View { board_id, card_id, json } => {
@@ -1722,9 +1781,9 @@ Automerge CRDT documents (binary blobs in SQLite).
 ### board list
   --json   Output JSON
 
-  Lists all board IDs stored locally.
-  Text output:  one board ID per line
-  JSON output:  ["<uuid>", ...]
+  Lists all boards stored locally with their titles.
+  Text output:  "<id>: <title>"  (one per line)
+  JSON output:  [{"id":"<uuid>","title":"<str>"}, ...]
 
 ### board rename <BOARD_ID> <NEW_TITLE>
   --json   Output JSON
@@ -1797,6 +1856,30 @@ Card fields:
 
 Priority calculation (when impact and effort are set):
   priority = floor((impact + 10 - effort) / 2)   range: 0–10
+
+### card list <BOARD_ID>
+  --json   Output JSON
+
+  Lists all non-deleted, non-archived cards across every column in the board.
+  Text output:  "[<col_title>] <number> – <title> (<id>)"  per card
+  JSON output:  array of card objects, each extended with "col_id" and "col_title"
+
+  JSON schema per item (abbreviated):
+    {
+      "id": "<uuid>",
+      "title": "<str>",
+      "col_id": "<uuid>",
+      "col_title": "<str>",
+      "number": {"prefix":"<str>","seq":<int>} | null,
+      "due_date": "<YYYY-MM-DD>" | null,
+      "labels": ["<str>", ...],
+      "impact": <int> | null,
+      "effort": <int> | null,
+      "direct_priority": <int> | null
+    }
+
+  Example:
+    $ monotask card list $BOARD --json | jq '[.[] | {id, title, col_title}]'
 
 ### card create <BOARD_ID> <COL_ID> <TITLE>
   --json   Output JSON
