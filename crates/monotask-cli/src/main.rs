@@ -82,33 +82,51 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum BoardCommands {
+    /// Create a new board with the given title
     Create { title: String, #[arg(long)] json: bool },
+    /// List all boards with their titles (--json returns [{id, title}])
     List { #[arg(long)] json: bool },
+    /// Rename a board
     Rename { board_id: String, new_title: String, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
 enum ColumnCommands {
+    /// Create a new column in a board
     Create { board_id: String, title: String, #[arg(long)] json: bool },
+    /// List all columns in a board with their card IDs
     List { board_id: String, #[arg(long)] json: bool },
+    /// Rename a column
     Rename { board_id: String, col_id: String, new_title: String, #[arg(long)] json: bool },
+    /// Delete a column
     Delete { board_id: String, col_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
 enum CardCommands {
+    /// Create a card in a column
     Create { board_id: String, col_id: String, title: String, #[arg(long)] json: bool },
-    /// List all non-deleted cards across all columns in a board
+    /// List all non-deleted, non-archived cards across all columns (--json adds col_id/col_title per card)
     List { board_id: String, #[arg(long)] json: bool },
+    /// Show all fields of a card including parent and subtasks
     View { board_id: String, card_id: String, #[arg(long)] json: bool },
+    /// Rename a card
     Rename { board_id: String, card_id: String, new_title: String, #[arg(long)] json: bool },
+    /// Soft-delete a card (hidden from all views)
     Delete { board_id: String, card_id: String, #[arg(long)] json: bool },
+    /// Soft-archive a card (hidden from normal views)
     Archive { board_id: String, card_id: String, #[arg(long)] json: bool },
+    /// Copy a card into another column on the same board
     Copy { board_id: String, card_id: String, col_id: String, #[arg(long)] json: bool },
+    /// Move a card to a different column (auto-detects current column)
     Move { board_id: String, card_id: String, to_col_id: String, #[arg(long)] json: bool },
+    /// Set the card's long-form description (markdown supported)
     SetDescription { board_id: String, card_id: String, text: String, #[arg(long)] json: bool },
+    /// Set the card cover color. Use "none" to clear
     SetCover { board_id: String, card_id: String, color: String, #[arg(long)] json: bool },
+    /// Set due date (YYYY-MM-DD). Use "none" to clear
     SetDueDate { board_id: String, card_id: String, date: String, #[arg(long)] json: bool },
+    /// Set a legacy string priority label. Use "none" to clear
     SetPriority { board_id: String, card_id: String, priority: String, #[arg(long)] json: bool },
     /// Set impact score (0–10). Priority = floor((impact + 10 - effort) / 2)
     SetImpact { board_id: String, card_id: String, #[arg(value_parser = clap::value_parser!(u8).range(0..=10))] value: u8, #[arg(long)] json: bool },
@@ -118,7 +136,9 @@ enum CardCommands {
     SetDirectPriority { board_id: String, card_id: String, #[arg(value_parser = clap::value_parser!(u8).range(0..=10), conflicts_with = "clear")] value: Option<u8>, #[arg(long)] clear: bool, #[arg(long)] json: bool },
     /// Clear impact, effort, and direct priority — resets scoring to unset state
     ClearPriority { board_id: String, card_id: String, #[arg(long)] json: bool },
+    /// Assign a card to a user (hex pubkey). Use "none" to clear
     SetAssignee { board_id: String, card_id: String, pubkey: String, #[arg(long)] json: bool },
+    /// Attach an image file to a card (stored as base64; referenced as img:<id> in markdown)
     AttachImage { board_id: String, card_id: String, file: String, #[arg(long)] json: bool },
     /// List all attachments on a card
     ListAttachments { board_id: String, card_id: String, #[arg(long)] json: bool },
@@ -1704,7 +1724,7 @@ fn print_ai_help() {
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 1.1.2
+Version: 1.1.3
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
