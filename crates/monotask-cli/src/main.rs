@@ -327,16 +327,19 @@ enum SpaceCommands {
     List,
     /// Show details of a Space
     Info { space_id: String },
+    /// Manage invite tokens for a Space
     Invite {
         #[command(subcommand)]
         cmd: SpaceInviteCommands,
     },
     /// Join a Space via a token or .space file
     Join { token_or_file: String },
+    /// Manage boards associated with a Space
     Boards {
         #[command(subcommand)]
         cmd: SpaceBoardsCommands,
     },
+    /// Manage members of a Space
     Members {
         #[command(subcommand)]
         cmd: SpaceMembersCommands,
@@ -1739,7 +1742,7 @@ fn print_ai_help() {
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 1.1.3
+Version: 1.1.4
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
