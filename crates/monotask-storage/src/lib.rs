@@ -24,38 +24,23 @@ fn extract_card_numbers(doc: &automerge::AutoCommit) -> Vec<(String, String)> {
     use automerge::ReadDoc;
     let cards_map = match monotask_core::get_cards_map_readonly(doc) {
         Ok(id) => id,
-        Err(e) => {
-            eprintln!("EXTRACT: get_cards_map_readonly failed: {e}");
-            return vec![];
-        }
+        Err(_) => return vec![],
     };
     let all_keys: Vec<String> = doc.keys(&cards_map).map(|k| k.to_string()).collect();
-    eprintln!("EXTRACT: cards_map has {} keys", all_keys.len());
     let result: Vec<(String, String)> = all_keys.into_iter()
         .filter_map(|card_id| {
             let card_obj = doc.get(&cards_map, &card_id).ok()?.map(|(_, id)| id)?;
-            // Skip deleted cards — they should not be resolvable by number
             let is_deleted = match doc.get(&card_obj, "deleted").ok().flatten() {
                 Some((automerge::Value::Scalar(s), _)) => {
                     matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
                 }
                 _ => false,
             };
-            if is_deleted {
-                eprintln!("EXTRACT: card {card_id:.8} is deleted, skipping");
-                return None;
-            }
-            let number = match monotask_core::get_string(doc, &card_obj, "number").ok().flatten() {
-                Some(n) => n,
-                None => {
-                    eprintln!("EXTRACT: card {card_id:.8} has no number, skipping");
-                    return None;
-                }
-            };
+            if is_deleted { return None; }
+            let number = monotask_core::get_string(doc, &card_obj, "number").ok().flatten()?;
             Some((card_id, number))
         })
         .collect();
-    eprintln!("EXTRACT: returning {} card number entries", result.len());
     result
 }
 

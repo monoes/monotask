@@ -106,8 +106,18 @@ enum ColumnCommands {
 enum CardCommands {
     /// Create a card in a column
     Create { board_id: String, col_id: String, title: String, #[arg(long)] json: bool },
-    /// List all non-deleted, non-archived cards across all columns (--json adds col_id/col_title per card)
-    List { board_id: String, #[arg(long)] json: bool },
+    /// List all non-deleted, non-archived cards. Filter with --col and/or --label. --json adds col_id/col_title per card.
+    List {
+        board_id: String,
+        /// Only return cards in this column ID
+        #[arg(long)]
+        col: Option<String>,
+        /// Only return cards that have this label (exact match)
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show all fields of a card including parent and subtasks
     View { board_id: String, card_id: String, #[arg(long)] json: bool },
     /// Rename a card
@@ -590,12 +600,15 @@ async fn main() -> anyhow::Result<()> {
                     println!("Created card: {} ({})", card.title, card.id);
                 }
             }
-            CardCommands::List { board_id, json } => {
+            CardCommands::List { board_id, col: col_filter, label: label_filter, json } => {
                 use automerge::ReadDoc;
                 let doc = storage.load_board(&board_id)?;
                 let cols = monotask_core::column::list_columns(&doc)?;
                 let mut cards: Vec<(String, String, monotask_core::card::Card)> = Vec::new();
                 for col in &cols {
+                    if let Some(ref cf) = col_filter {
+                        if &col.id != cf { continue; }
+                    }
                     let col_obj = match monotask_core::column::find_column_obj(&doc, &col.id)? {
                         Some(o) => o,
                         None => continue,
@@ -608,9 +621,11 @@ async fn main() -> anyhow::Result<()> {
                         if let Some((automerge::Value::Scalar(s), _)) = doc.get(&card_ids_list, i)? {
                             if let automerge::ScalarValue::Str(card_id) = s.as_ref() {
                                 if let Ok(card) = monotask_core::card::read_card(&doc, card_id.as_str()) {
-                                    if !card.deleted && !card.archived {
-                                        cards.push((col.id.clone(), col.title.clone(), card));
+                                    if card.deleted || card.archived { continue; }
+                                    if let Some(ref lf) = label_filter {
+                                        if !card.labels.iter().any(|l| l == lf) { continue; }
                                     }
+                                    cards.push((col.id.clone(), col.title.clone(), card));
                                 }
                             }
                         }
@@ -1878,9 +1893,12 @@ Priority calculation (when impact and effort are set):
   priority = floor((impact + 10 - effort) / 2)   range: 0–10
 
 ### card list <BOARD_ID>
-  --json   Output JSON
+  --col <COL_ID>     Only return cards in this column
+  --label <LABEL>    Only return cards that have this label (exact string match)
+  --json             Output JSON
 
-  Lists all non-deleted, non-archived cards across every column in the board.
+  Lists all non-deleted, non-archived cards. Both filters are optional and
+  can be combined. Filters are applied server-side before any output.
   Text output:  "[<col_title>] <number> – <title> (<id>)"  per card
   JSON output:  array of card objects, each extended with "col_id" and "col_title"
 
@@ -1898,8 +1916,11 @@ Priority calculation (when impact and effort are set):
       "direct_priority": <int> | null
     }
 
-  Example:
-    $ monotask card list $BOARD --json | jq '[.[] | {id, title, col_title}]'
+  Examples:
+    $ monotask card list $BOARD --json
+    $ monotask card list $BOARD --col $TODO_COL --json
+    $ monotask card list $BOARD --label "role:writer" --json
+    $ monotask card list $BOARD --col $COL --label "role:reviewer" --json
 
 ### card create <BOARD_ID> <COL_ID> <TITLE>
   --json   Output JSON
