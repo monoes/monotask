@@ -4401,6 +4401,7 @@
           await invoke('remove_board_from_space', { spaceId: currentSpaceId, boardId: btn.dataset.board });
           await refreshSpaceSettings();
           await refreshSpaceMain();
+          await loadSpacesSidebar();
         } catch (e) { showAlert('Error removing board: ' + e); }
       };
     });

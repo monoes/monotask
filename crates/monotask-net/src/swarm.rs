@@ -402,12 +402,12 @@ async fn handle_swarm_event(
                 let our_board_ids = {
                     let mut guard = storage.lock().unwrap();
                     // Merge peer's space doc — updates members, boards, name in SQL.
+                    // merge_space_doc already adds all LIVE board refs from the merged doc
+                    // to space_boards, so we must NOT blindly add their_board_ids here:
+                    // doing so would resurrect boards we've deleted (whose refs are tombstoned
+                    // in our Automerge doc but may still be in the peer's space_boards).
                     if !space_doc_bytes.is_empty() {
                         merge_space_doc(&space_id, &space_doc_bytes, &mut guard);
-                    }
-                    // Register any boards the peer has but we don't yet know about.
-                    for board_id in &their_board_ids {
-                        let _ = monotask_storage::space::add_board(guard.conn(), &space_id, board_id);
                     }
                     guard.list_board_ids().unwrap_or_default()
                 };

@@ -97,6 +97,15 @@ enum BoardCommands {
     List { #[arg(long)] json: bool },
     /// Rename a board
     Rename { board_id: String, new_title: String, #[arg(long)] json: bool },
+    /// Permanently delete a board and remove it from its space
+    Delete {
+        board_id: String,
+        /// Space the board belongs to (required)
+        #[arg(long, value_name = "SPACE_ID")]
+        space: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -569,6 +578,19 @@ async fn main() -> anyhow::Result<()> {
                 storage.save_board(&board_id, &mut doc)?;
                 if json { println!("{}", serde_json::json!({"board_id": board_id, "title": new_title})); }
                 else { println!("Renamed board {} to: {}", board_id, new_title); }
+            }
+            BoardCommands::Delete { board_id, space, json } => {
+                use monotask_core::space as cs;
+                use monotask_storage::space as ss;
+                let space_bytes = ss::load_space_doc(storage.conn(), &space)
+                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotask space list` to see available spaces.", space))?;
+                let mut space_doc = automerge::AutoCommit::load(&space_bytes)?;
+                cs::remove_board_ref(&mut space_doc, &board_id)?;
+                ss::update_space_doc(storage.conn(), &space, &space_doc.save())?;
+                ss::remove_board(storage.conn(), &space, &board_id)?;
+                storage.delete_board(&board_id)?;
+                if json { println!("{}", serde_json::json!({"deleted": true, "board_id": board_id, "space_id": space})); }
+                else { println!("Deleted board {} from space {}", board_id, space); }
             }
         },
         Commands::Column { cmd } => match cmd {
@@ -1859,6 +1881,21 @@ Automerge CRDT documents (binary blobs in SQLite).
   Renames an existing board.
   Text output:  "Renamed board <id> to: <new_title>"
   JSON output:  {"board_id":"<uuid>","title":"<new_title>"}
+
+### board delete <BOARD_ID> --space <SPACE_ID>
+  --space  Space ID the board belongs to (required)
+  --json   Output JSON
+
+  Permanently deletes a board and removes it from its space.
+  Removes board data, space membership, and the Automerge space doc ref.
+  Use `monotask board list` and `monotask space list` to get IDs.
+  Text output:  "Deleted board <id> from space <space_id>"
+  JSON output:  {"deleted":true,"board_id":"<uuid>","space_id":"<uuid>"}
+
+  Example:
+    $ SPACE=$(monotask space list --json | jq -r '.[0].id')
+    $ BOARD=$(monotask board list --json | jq -r '.[0].id')
+    $ monotask board delete $BOARD --space $SPACE
 
 ────────────────────────────────────────────────────────────────────────────────
 ## column
