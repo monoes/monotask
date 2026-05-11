@@ -11,6 +11,35 @@
 - ALWAYS read a file before editing it
 - NEVER commit secrets, credentials, or .env files
 
+## Coding Principles
+
+### Think Before Coding
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them — don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### Simplicity First
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+### Surgical Changes
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+- Every changed line should trace directly to the user's request.
+
+### Goal-Driven Execution
+- Transform tasks into verifiable goals with success criteria.
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- For multi-step tasks, state a brief plan with verification steps.
+
 ## File Organization
 
 - NEVER save to root folder — use the directories below
@@ -168,18 +197,18 @@ npx monomind@latest memory list --namespace patterns --limit 10
 npx monomind@latest memory retrieve --key "pattern-auth" --namespace patterns
 ```
 
-## Knowledge Graph (graphify)
+## Knowledge Graph (Monograph)
 
-Built into monomind since v1.3.0 — no separate install needed.
+Built into monomind since v1.8.0 — no separate install needed. Pure TypeScript, no Python required.
 
 ### MCP Tools (prefix: `mcp__monomind__`)
 
 | Tool | Description |
 |------|-------------|
-| `graphify_build` | Build or refresh knowledge graph from codebase |
-| `graphify_report` | Generate GRAPH_REPORT.md with community breakdown |
-| `graphify_suggest` | Get refactoring/architecture suggestions from graph |
-| `graphify_health` | Check graph quality score and experiment status |
+| `monograph_build` | Build or refresh knowledge graph from codebase |
+| `monograph_report` | Generate GRAPH_REPORT.md with community breakdown |
+| `monograph_suggest` | Get refactoring/architecture suggestions from graph |
+| `monograph_health` | Check graph quality score and experiment status |
 
 ### How It Works
 
@@ -189,12 +218,12 @@ Built into monomind since v1.3.0 — no separate install needed.
 4. **Experiment loop** — tracks BASELINE/KEEP/DISCARD in `results.tsv`
 5. **BFD chunking** — efficient Anthropic API calls via bin-packing
 
-> If graphify tools are not available, run `npx monomind@latest init --force` then restart Claude Code.
+> If monograph tools are not available, run `npx monomind@latest init --force` then restart Claude Code.
 
 ## Quick Setup
 
 ```bash
-# Add MCP server — includes graphify, swarm, memory, hooks, all 200+ tools
+# Add MCP server — includes monograph, swarm, memory, hooks, all 200+ tools
 claude mcp add monomind -- npx -y monomind@latest mcp start
 
 # Start background workers
@@ -204,7 +233,7 @@ npx monomind@latest daemon start
 npx monomind@latest doctor --fix
 ```
 
-> **Package name changed:** Use `monomind@latest` (not `@monoes/cli@latest` which is the old name and returns 404).
+> **Package name changed:** Use `monomind@latest` (not `@monomind/cli@latest` which is the old name and returns 404).
 
 ## Claude Code vs CLI Tools
 

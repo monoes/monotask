@@ -82,8 +82,17 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum BoardCommands {
-    /// Create a new board with the given title
-    Create { title: String, #[arg(long)] json: bool },
+    /// Create a new board inside a space. Boards must belong to a space.
+    ///
+    /// SPACE_ID is required. Run `monotask space list` to see your spaces.
+    Create {
+        title: String,
+        /// Space the board belongs to (required)
+        #[arg(long, value_name = "SPACE_ID")]
+        space: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// List all boards with their titles (--json returns [{id, title}])
     List { #[arg(long)] json: bool },
     /// Rename a board
@@ -514,15 +523,23 @@ async fn main() -> anyhow::Result<()> {
             println!("Initialized monotask at {}", dir.display());
         }
         Commands::Board { cmd } => match cmd {
-            BoardCommands::Create { title, json } => {
+            BoardCommands::Create { title, space, json } => {
+                use monotask_core::space as cs;
+                use monotask_storage::space as ss;
                 let id = monotask_crypto::Identity::generate();
                 let (mut doc, board) = monotask_core::board::create_board(&title, &id.public_key_hex())?;
                 storage.save_board(&board.id, &mut doc)?;
+                let space_bytes = ss::load_space_doc(storage.conn(), &space)
+                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotask space list` to see available spaces.", space))?;
+                let mut space_doc = automerge::AutoCommit::load(&space_bytes)?;
+                cs::add_board_ref(&mut space_doc, &board.id)?;
+                ss::update_space_doc(storage.conn(), &space, &space_doc.save())?;
+                ss::add_board(storage.conn(), &space, &board.id)?;
                 if json {
                     let deep_link = format!("monotask://board/{}", board.id);
-                    println!("{}", serde_json::json!({"id": board.id, "title": board.title, "deep_link": deep_link}));
+                    println!("{}", serde_json::json!({"id": board.id, "title": board.title, "space_id": space, "deep_link": deep_link}));
                 } else {
-                    println!("Created board: {} ({})", board.title, board.id);
+                    println!("Created board: {} ({}) in space {}", board.title, board.id, space);
                 }
             }
             BoardCommands::List { json } => {
@@ -1742,7 +1759,7 @@ fn print_ai_help() {
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 1.1.4
+Version: 1.1.5
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
@@ -1752,11 +1769,15 @@ Run `monotask ai-help` to print this document at any time.
 QUICK-START FOR AGENTS
 --------------------------------------------------------------------------------
 1. Check your identity:       monotask profile show
-2. Create a board:            monotask board create "My Project"
-3. List columns on a board:   monotask column list <BOARD_ID>
-4. Create a card:             monotask card create <BOARD_ID> <COL_ID> "Task title"
-5. View a card:               monotask card view <BOARD_ID> <CARD_ID>
-6. Add a comment:             monotask card comment add <BOARD_ID> <CARD_ID> "text"
+2. Create or pick a space:    monotask space create "My Team"
+3. Create a board in a space: monotask board create "My Project" --space <SPACE_ID>
+4. List columns on a board:   monotask column list <BOARD_ID>
+5. Create a card:             monotask card create <BOARD_ID> <COL_ID> "Task title"
+6. View a card:               monotask card view <BOARD_ID> <CARD_ID>
+7. Add a comment:             monotask card comment add <BOARD_ID> <CARD_ID> "text"
+
+NOTE: Boards must belong to a space. `board create` requires --space <SPACE_ID>.
+      Run `monotask space list` first to get a space ID.
 
 Always use --json for machine-readable output when parsing results.
 
@@ -1805,16 +1826,25 @@ Boards are the top-level containers. Each board holds an ordered list of
 columns; each column holds an ordered list of cards. Boards are stored as
 Automerge CRDT documents (binary blobs in SQLite).
 
-### board create <TITLE>
-  --json   Output JSON
+### board create <TITLE> --space <SPACE_ID>
+  --space  SPACE_ID   (REQUIRED) The space this board belongs to.
+  --json              Output JSON
 
-  Creates a new board with the given title. Prints the board ID.
-  Text output:  "Created board: <title> (<id>)"
-  JSON output:  {"id":"<uuid>","title":"<title>","deep_link":"monotask://board/<id>"}
+  Creates a new board inside the given space. Boards must belong to a space —
+  this is enforced at creation time. The board is added to the space immediately.
+
+  Run `monotask space list` to find your SPACE_ID before calling this.
+
+  Text output:  "Created board: <title> (<id>) in space <space_id>"
+  JSON output:  {"id":"<uuid>","title":"<title>","space_id":"<uuid>","deep_link":"monotask://board/<id>"}
+
+  Error: if SPACE_ID does not exist locally, the command fails with:
+    "Space '<id>' not found. Run `monotask space list` to see available spaces."
 
   Example:
-    $ monotask board create "Sprint 42" --json
-    {"id":"a1b2c3d4-...","title":"Sprint 42","deep_link":"monotask://board/a1b2c3..."}
+    $ SPACE=$(monotask space list | awk 'NR==1{print $1}')
+    $ monotask board create "Sprint 42" --space $SPACE --json
+    {"id":"a1b2c3d4-...","title":"Sprint 42","space_id":"...","deep_link":"monotask://board/a1b2c3..."}
 
 ### board list
   --json   Output JSON
@@ -2457,7 +2487,8 @@ COMMON AGENT WORKFLOWS
 --------------------------------------------------------------------------------
 
 ### Workflow: Create a board and populate it
-  BOARD=$(monotask board create "My Board" --json | jq -r .id)
+  SPACE=$(monotask space list | awk 'NR==1{print $1}')   # pick first space
+  BOARD=$(monotask board create "My Board" --space $SPACE --json | jq -r .id)
   TODO_COL=$(monotask column create $BOARD "Todo" --json | jq -r .id)
   DOING_COL=$(monotask column create $BOARD "Doing" --json | jq -r .id)
   DONE_COL=$(monotask column create $BOARD "Done" --json | jq -r .id)

@@ -333,6 +333,9 @@ struct CommentView {
     text: String,
     created_at: String,
     avatar_url: Option<String>,
+    image_b64: Option<String>,
+    image_mime: Option<String>,
+    image_name: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -697,6 +700,12 @@ struct ExportComment {
     author: String,
     text: String,
     created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_b64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_name: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -753,7 +762,7 @@ fn export_board_full_cmd(
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|c| !c.deleted)
-                    .map(|c| ExportComment { author: c.author, text: c.text, created_at: c.created_at })
+                    .map(|c| ExportComment { author: c.author, text: c.text, created_at: c.created_at, image_b64: c.image_b64, image_mime: c.image_mime, image_name: c.image_name })
                     .collect();
                 let attachments: Vec<ExportAttachment> = card.attachments.into_iter()
                     .map(|(_, a)| ExportAttachment { name: a.name, mime: a.mime, data_b64: a.data_b64 })
@@ -869,7 +878,7 @@ fn import_board_cmd(
             }
             // Comments
             for comment in &imp_card.comments {
-                let _ = monotask_core::comment::add_comment(&mut doc, &card.id, &comment.text, &comment.author);
+                let _ = monotask_core::comment::add_comment(&mut doc, &card.id, &comment.text, &comment.author, comment.image_b64.as_deref(), comment.image_mime.as_deref(), comment.image_name.as_deref());
             }
             // Attachments
             for att in &imp_card.attachments {
@@ -1138,7 +1147,7 @@ fn get_card_cmd(board_id: String, card_id: String, state: tauri::State<AppState>
     let comments = monotask_core::comment::list_comments(&doc, &card_id)
         .unwrap_or_default()
         .into_iter()
-        .map(|c| CommentView { id: c.id, author: c.author, text: c.text, created_at: c.created_at, avatar_url: c.avatar_url })
+        .map(|c| CommentView { id: c.id, author: c.author, text: c.text, created_at: c.created_at, avatar_url: c.avatar_url, image_b64: c.image_b64, image_mime: c.image_mime, image_name: c.image_name })
         .collect();
     let checklists = monotask_core::checklist::list_checklists(&doc, &card_id)
         .unwrap_or_default()
@@ -1466,18 +1475,55 @@ fn set_direct_priority_cmd(board_id: String, card_id: String, value: Option<u8>,
 }
 
 #[tauri::command]
-fn add_comment_cmd(board_id: String, card_id: String, text: String, state: tauri::State<AppState>) -> Result<CommentView, String> {
-    validate_text(&text, "Comment", 10_000)?;
+fn clear_priority_cmd(board_id: String, card_id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id).map_err(|e| e.to_string())?;
+    monotask_core::card::clear_priority_fields(&mut doc, &card_id).map_err(|e| e.to_string())?;
+    monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn add_comment_cmd(
+    board_id: String,
+    card_id: String,
+    text: String,
+    image_b64: Option<String>,
+    image_mime: Option<String>,
+    image_name: Option<String>,
+    state: tauri::State<AppState>,
+) -> Result<CommentView, String> {
+    if text.is_empty() && image_b64.is_none() {
+        return Err("Comment must have text or an image".into());
+    }
+    if !text.is_empty() {
+        validate_text(&text, "Comment", 10_000)?;
+    }
+    // Guard against base64-encoded size (base64 expands 4/3 over raw bytes).
+    // 4 MB raw = 4*1024*1024*4/3 = 5,592,405 b64 bytes; use 5,600,000 as the cap.
+    const MAX_IMAGE_B64: usize = 5_600_000;
+    if let Some(ref b64) = image_b64 {
+        if b64.len() > MAX_IMAGE_B64 {
+            return Err("Image exceeds 4 MB limit".into());
+        }
+    }
     let storage = state.storage.lock().map_err(|e| e.to_string())?;
     let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
         .map_err(|e| e.to_string())?;
     let author = state.identity.public_key_hex();
-    let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, &author)
-        .map_err(|e| e.to_string())?;
+    let comment = monotask_core::comment::add_comment(
+        &mut doc, &card_id, &text, &author,
+        image_b64.as_deref(), image_mime.as_deref(), image_name.as_deref(),
+    ).map_err(|e| e.to_string())?;
     monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
         .map_err(|e| e.to_string())?;
     trigger_board_sync(&board_id, &state);
-    Ok(CommentView { id: comment.id, author: comment.author, text: comment.text, created_at: comment.created_at, avatar_url: comment.avatar_url })
+    Ok(CommentView {
+        id: comment.id, author: comment.author, text: comment.text,
+        created_at: comment.created_at, avatar_url: comment.avatar_url,
+        image_b64: comment.image_b64, image_mime: comment.image_mime, image_name: comment.image_name,
+    })
 }
 
 #[tauri::command]
@@ -1502,29 +1548,11 @@ fn edit_comment_cmd(
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
     validate_text(&text, "Comment", 10_000)?;
-    use automerge::transaction::Transactable;
     let storage = state.storage.lock().map_err(|e| e.to_string())?;
     let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
         .map_err(|e| e.to_string())?;
-    let card_obj = monotask_core::card::get_card_obj(&doc, &card_id).map_err(|e| e.to_string())?;
-    let comments = monotask_core::comment::get_comments_list(&doc, &card_obj).map_err(|e| e.to_string())?;
-    use automerge::ReadDoc;
-    let len = doc.length(&comments);
-    let mut found = false;
-    for i in 0..len {
-        if let Ok(Some((_, c_obj))) = doc.get(&comments, i) {
-            if let Ok(Some(id)) = monotask_core::get_string(&doc, &c_obj, "id") {
-                if id == comment_id {
-                    doc.put(&c_obj, "text", text.as_str()).map_err(|e| e.to_string())?;
-                    found = true;
-                    break;
-                }
-            }
-        }
-    }
-    if !found {
-        return Err(format!("Comment not found: {comment_id}"));
-    }
+    monotask_core::comment::edit_comment(&mut doc, &card_id, &comment_id, &text)
+        .map_err(|e| e.to_string())?;
     monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
         .map_err(|e| e.to_string())?;
     trigger_board_sync(&board_id, &state);
@@ -2911,6 +2939,7 @@ fn main() {
             set_impact_cmd,
             set_effort_cmd,
             set_direct_priority_cmd,
+            clear_priority_cmd,
             delete_card_cmd,
             delete_column_cmd,
             add_comment_cmd,
@@ -3380,8 +3409,8 @@ async fn sync_linear_card_cmd(
 // ── Auto-update ─────────────────────────────────────────────────────────────
 
 /// Download and replace the CLI binary from a GitHub release asset.
-/// Best-effort: errors are silently swallowed so they never block the app update.
-async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
+/// Returns true if the update succeeded, false on any failure.
+async fn update_cli_binary(assets: &serde_json::Value, tag: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         let asset_name = format!("monotask-{}-aarch64-apple-darwin.tar.gz", tag);
@@ -3390,10 +3419,9 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
             .and_then(|a| a["browser_download_url"].as_str())
         {
             Some(u) => u.to_string(),
-            None => return,
+            None => return false,
         };
 
-        // Resolve current install path; fall back to /usr/local/bin
         let install_dir = tokio::process::Command::new("sh")
             .args(["-c", "dirname $(which monotask 2>/dev/null) 2>/dev/null"])
             .output().await.ok()
@@ -3410,25 +3438,23 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
             .status().await;
         if dl.map(|s| !s.success()).unwrap_or(true) {
             let _ = tokio::fs::remove_file(&tmp_tar).await;
-            return;
+            return false;
         }
 
-        // Extract binary from tarball into /tmp
         let _ = tokio::process::Command::new("tar")
             .args(["-xzf", &tmp_tar, "-C", "/tmp", "monotask"])
             .status().await;
 
-        // Replace existing binary (may need elevated perms; best-effort)
         let dest = format!("{}/monotask", install_dir);
-        let _ = tokio::process::Command::new("cp")
+        let ok = tokio::process::Command::new("cp")
             .args(["-f", "/tmp/monotask", &dest])
-            .status().await;
+            .status().await.map(|s| s.success()).unwrap_or(false);
         let _ = tokio::process::Command::new("chmod")
-            .args(["+x", &dest])
-            .status().await;
+            .args(["+x", &dest]).status().await;
 
         let _ = tokio::fs::remove_file(&tmp_tar).await;
         let _ = tokio::fs::remove_file("/tmp/monotask").await;
+        return ok;
     }
 
     #[cfg(target_os = "windows")]
@@ -3439,7 +3465,7 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
             .and_then(|a| a["browser_download_url"].as_str())
         {
             Some(u) => u.to_string(),
-            None => return,
+            None => return false,
         };
 
         let tmp_dir = std::env::var("TEMP").unwrap_or_else(|_| "C:\\Windows\\Temp".into());
@@ -3460,10 +3486,9 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
             .status().await;
         if dl.map(|s| !s.success()).unwrap_or(true) {
             let _ = tokio::fs::remove_file(&tmp_zip).await;
-            return;
+            return false;
         }
 
-        // Extract and replace
         let _ = tokio::process::Command::new("powershell")
             .args(["-Command",
                    &format!("Expand-Archive -Force '{}' '{}'", tmp_zip, tmp_dir)])
@@ -3471,12 +3496,13 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) {
 
         let src = format!("{}\\monotask.exe", tmp_dir);
         let dest = format!("{}monotask.exe", install_dir);
-        let _ = tokio::fs::rename(&src, &dest).await;
+        let ok = tokio::fs::rename(&src, &dest).await.is_ok();
         let _ = tokio::fs::remove_file(&tmp_zip).await;
+        return ok;
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let _ = (assets, tag);
+    { let _ = (assets, tag); false }
 }
 
 fn version_is_newer(remote: &str, local: &str) -> bool {
@@ -3520,20 +3546,32 @@ async fn check_cli_version_cmd() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// Install / update the CLI to the same version as the running app via cargo.
+/// Install / update the CLI to the same version as the running app from GitHub release assets.
 #[tauri::command]
 async fn install_cli_cmd() -> Result<(), String> {
     let app_version = env!("CARGO_PKG_VERSION");
     let tag = format!("v{app_version}");
-    let out = tokio::process::Command::new("cargo")
-        .args(["install", "--git", "https://github.com/nokhodian/monotask",
-               "--tag", &tag, "monotask-cli"])
+    let url = format!(
+        "https://api.github.com/repos/nokhodian/monotask/releases/tags/{tag}"
+    );
+    let api_out = tokio::process::Command::new("curl")
+        .args(["-sfL", "--max-time", "15",
+               "-H", "User-Agent: monotask-updater",
+               "-H", "Accept: application/vnd.github.v3+json",
+               &url])
         .output().await
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
+        .map_err(|e| format!("GitHub API error: {e}"))?;
+    if !api_out.status.success() {
+        return Err("Failed to fetch release info from GitHub".into());
+    }
+    let body = String::from_utf8_lossy(&api_out.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("JSON parse error: {e}"))?;
+    let assets = &json["assets"];
+    if update_cli_binary(assets, &tag).await {
         Ok(())
     } else {
-        Err(String::from_utf8_lossy(&out.stderr).to_string())
+        Err("CLI binary download or install failed".into())
     }
 }
 
@@ -3665,7 +3703,7 @@ async fn install_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
             .arg("find /Applications/Monotask.app -print0 | xargs -0 xattr -c 2>/dev/null; codesign --force --deep --sign - /Applications/Monotask.app 2>/dev/null")
             .status().await;
 
-        // Step 6b: Update CLI binary to match the new app version
+        // Step 6b: Update CLI binary to match the new app version (best-effort).
         update_cli_binary(&json["assets"], &tag).await;
 
         // Step 7: Relaunch and exit
@@ -3707,7 +3745,7 @@ async fn install_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
             return Err("Failed to download installer — check network connection".into());
         }
 
-        // Step 3b: Update CLI binary before launching the installer
+        // Step 3b: Update CLI binary to match the new app version (best-effort).
         update_cli_binary(&json["assets"], &tag).await;
 
         // Step 3: Launch installer silently (/S = NSIS silent mode) and exit.

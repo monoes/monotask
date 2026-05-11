@@ -267,6 +267,15 @@
     }
     #btn-back-to-space:hover { color: #ccc; border-color: #3a3a5a; }
     .board-view-topbar h2 { font-size: 15px; color: #eee; flex: 1; font-weight: 600; }
+    #board-actions-wrap { position: relative; }
+    #btn-board-actions { background:none; border:1px solid #2a2a3a; color:#888; padding:4px 10px; border-radius:4px; cursor:pointer; font-size:15px; line-height:1; }
+    #btn-board-actions:hover { color:#ccc; border-color:#3a3a5a; }
+    #board-actions-menu { display:none; position:absolute; right:0; top:calc(100% + 4px); background:#12122a; border:1px solid #2a2a4a; border-radius:6px; min-width:160px; z-index:999; box-shadow:0 6px 20px rgba(0,0,0,0.5); overflow:hidden; }
+    #board-actions-menu.open { display:block; }
+    .board-action-item { display:flex; align-items:center; gap:9px; width:100%; background:none; border:none; color:#ccc; font-size:13px; padding:9px 14px; cursor:pointer; text-align:left; white-space:nowrap; }
+    .board-action-item:hover { background:#1e1e3a; color:#fff; }
+    .board-action-item .bai-icon { font-size:14px; width:16px; text-align:center; flex-shrink:0; }
+    .board-action-sep { height:1px; background:#1e1e3a; margin:3px 0; }
     #btn-add-column {
       background: none; border: 1px solid #2a2a3a; color: #666;
       padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;
@@ -364,6 +373,12 @@
     .priority-low { background:rgba(74,130,220,0.2); color:#4a82dc; }
     .priority-medium { background:rgba(200,150,42,0.2); color:#c8962a; }
     .priority-high { background:rgba(220,70,70,0.2); color:#dc4646; }
+    .card-score-bars { display:flex; flex-direction:column; gap:3px; margin-top:6px; }
+    .card-score-bar-row { display:flex; align-items:center; gap:5px; }
+    .card-score-bar-label { font-size:9px; color:#555; width:11px; flex-shrink:0; text-align:right; }
+    .card-score-bar-track { flex:1; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
+    .card-score-bar-fill { height:100%; border-radius:2px; }
+    .card-score-bar-val { font-size:9px; width:14px; flex-shrink:0; text-align:left; }
     .card-last-move { font-size: 10px; color: #888; margin-top: 5px; opacity: 0.75; }
     .card-assignee-avatar {
       width: 20px; height: 20px; border-radius: 50%;
@@ -641,8 +656,8 @@
       padding: 8px 10px; border-radius: 4px; font-size: 13px;
       line-height: 1.5; overflow-y: auto;
     }
-    .card-detail-desc-preview img {
-      max-width: 100%; border-radius: 4px; margin: 4px 0; display: block;
+    .card-detail-desc-preview img, #preview-card-desc img {
+      max-width: 100%; height: auto; border-radius: 4px; margin: 4px 0; display: block;
     }
     .card-detail-desc-preview code {
       background: #1a1a30; padding: 1px 4px; border-radius: 3px;
@@ -1150,7 +1165,7 @@
   <!-- CLI mismatch banner (shown independently of app update) -->
   <div id="cli-mismatch-banner">
     <span style="font-size:15px;">⚠️</span>
-    <span class="banner-text">CLI version mismatch: app is <strong id="cli-mismatch-app-ver"></strong> but <code>monotask</code> CLI is <strong id="cli-mismatch-cli-ver"></strong>. Update the CLI to keep them in sync.</span>
+    <span class="banner-text">App updated to <strong id="cli-mismatch-app-ver"></strong> but CLI is still <strong id="cli-mismatch-cli-ver"></strong>. <span id="cli-mismatch-hint">Run <code>brew upgrade monotask</code> or download from the <a href="#" onclick="openReleasesPage(); return false;">releases page</a>.</span></span>
     <button class="btn-update-cli" id="btn-update-cli" onclick="updateCli()">Update CLI</button>
     <button class="btn-dismiss-cli" onclick="dismissCliMismatch()">Dismiss</button>
   </div>
@@ -1295,10 +1310,24 @@
         <button id="btn-back-to-space" aria-label="Back to space">&#8592;</button>
         <h2 id="board-view-title"></h2>
         <button id="btn-add-column">+ Column</button>
-        <button id="btn-export-board" class="btn-secondary" style="font-size:12px;padding:4px 10px;" aria-label="Export board as JSON">&#8595; Export</button>
-        <button id="btn-import-board" class="btn-secondary" style="font-size:12px;padding:4px 10px;" aria-label="Import cards from file">&#8593; Import</button>
-        <button id="btn-integrations" class="btn-secondary" style="font-size:12px;padding:4px 10px;" aria-label="Integrations" onclick="openIntegrationsModal()">&#9889; GitHub</button>
-        <button id="btn-linear-integrations" class="btn-secondary" style="font-size:12px;padding:4px 10px;" aria-label="Linear Integrations" onclick="openLinearModal()">&#9651; Linear</button>
+        <div id="board-actions-wrap">
+          <button id="btn-board-actions" aria-label="Board actions" onclick="toggleBoardActionsMenu(event)">&#8942;</button>
+          <div id="board-actions-menu">
+            <button class="board-action-item" id="btn-export-board" aria-label="Export board as JSON">
+              <span class="bai-icon">&#8595;</span> Export
+            </button>
+            <button class="board-action-item" id="btn-import-board" aria-label="Import cards from file">
+              <span class="bai-icon">&#8593;</span> Import
+            </button>
+            <div class="board-action-sep"></div>
+            <button class="board-action-item" aria-label="GitHub integration" onclick="closeBoardActionsMenu();openIntegrationsModal()">
+              <span class="bai-icon">&#9889;</span> GitHub
+            </button>
+            <button class="board-action-item" aria-label="Linear integration" onclick="closeBoardActionsMenu();openLinearModal()">
+              <span class="bai-icon">&#9651;</span> Linear
+            </button>
+          </div>
+        </div>
         <div style="display:flex;gap:4px;margin-left:auto;background:#0d0d1c;border:1px solid #1e1e3a;border-radius:6px;padding:2px;">
           <button id="btn-view-kanban" onclick="setBoardViewMode('kanban')" title="Kanban view" style="background:#1e1e3a;border:none;color:#e0e0f0;padding:4px 9px;border-radius:4px;cursor:pointer;font-size:13px;">⊞</button>
           <button id="btn-view-list" onclick="setBoardViewMode('list')" title="List view" style="background:none;border:none;color:#888;padding:4px 9px;border-radius:4px;cursor:pointer;font-size:13px;">☰</button>
@@ -1525,7 +1554,7 @@
             <div class="card-detail-label" style="margin-bottom:0;">Description</div>
             <div class="desc-tab-bar" style="margin-bottom:0;">
               <button id="desc-tab-edit" class="desc-tab active" onclick="switchDescTab('edit')">Edit</button>
-              <button id="desc-tab-preview" class="desc-tab" onclick="switchDescTab('preview')">Preview</button>
+              <button id="desc-tab-preview" class="desc-tab" onclick="if(_cardDetailCtx){closeModal('modal-card-detail');openCardPreview(_cardDetailCtx.cardId,_cardDetailCtx.boardId);}">Preview</button>
             </div>
           </div>
           <div id="desc-toolbar" class="desc-toolbar">
@@ -1548,30 +1577,36 @@
           <div class="card-detail-label">Assignee</div>
           <div id="card-detail-assignee-picker" class="assignee-picker"></div>
         </div>
-        <div class="card-detail-section">
-          <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>Impact</span><span id="impact-val-display" style="font-weight:700;color:#5890e0;font-size:13px;">—</span>
+        <div class="card-detail-section" style="border-top:1px solid #1a1a2e;padding-top:10px;margin-top:2px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <span class="card-detail-label" style="margin-bottom:0;">Scoring</span>
+            <button id="btn-clear-priority" title="Reset impact, effort & priority" onclick="clearPriorityFields()" style="background:none;border:1px solid #2a2a4a;color:#666;border-radius:4px;cursor:pointer;font-size:11px;padding:1px 7px;line-height:1.6;">×</button>
           </div>
-          <input type="range" id="card-detail-impact" min="0" max="10" step="1" value="0"
-            style="width:100%;accent-color:#5890e0;cursor:pointer;" oninput="onImpactChange(this.value)">
-        </div>
-        <div class="card-detail-section">
-          <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>Effort</span><span id="effort-val-display" style="font-weight:700;color:#c8962a;font-size:13px;">—</span>
+          <div id="impact-section">
+            <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Impact</span><span id="impact-val-display" style="font-weight:700;color:#5890e0;font-size:13px;">—</span>
+            </div>
+            <input type="range" id="card-detail-impact" min="0" max="10" step="1" value="0"
+              style="width:100%;accent-color:#5890e0;cursor:pointer;" oninput="onImpactChange(this.value)">
           </div>
-          <input type="range" id="card-detail-effort" min="0" max="10" step="1" value="0"
-            style="width:100%;accent-color:#c8962a;cursor:pointer;" oninput="onEffortChange(this.value)">
-        </div>
-        <div class="card-detail-section" id="direct-priority-section" style="display:none;">
-          <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
-            <span>Priority (0–10)</span><span id="direct-priority-val-display" style="font-weight:700;color:#aafa9a;font-size:13px;">—</span>
+          <div id="effort-section" style="margin-top:6px;">
+            <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Effort</span><span id="effort-val-display" style="font-weight:700;color:#c8962a;font-size:13px;">—</span>
+            </div>
+            <input type="range" id="card-detail-effort" min="0" max="10" step="1" value="0"
+              style="width:100%;accent-color:#c8962a;cursor:pointer;" oninput="onEffortChange(this.value)">
           </div>
-          <input type="range" id="card-detail-direct-priority" min="0" max="10" step="1" value="0"
-            style="width:100%;accent-color:#aafa9a;cursor:pointer;" oninput="onDirectPriorityChange(this.value)">
-        </div>
-        <div class="card-detail-section" id="computed-priority-section">
-          <div class="card-detail-label">Priority <span id="priority-formula-label" style="font-size:10px;color:#444;">(impact+10−effort)÷2</span></div>
-          <div id="card-detail-computed-priority" style="font-size:22px;font-weight:700;color:#aafa9a;letter-spacing:0.05em;">—</div>
+          <div id="direct-priority-section" style="display:none;margin-top:6px;">
+            <div class="card-detail-label" style="display:flex;justify-content:space-between;align-items:center;">
+              <span>Priority (0–10)</span><span id="direct-priority-val-display" style="font-weight:700;color:#aafa9a;font-size:13px;">—</span>
+            </div>
+            <input type="range" id="card-detail-direct-priority" min="0" max="10" step="1" value="0"
+              style="width:100%;accent-color:#aafa9a;cursor:pointer;" oninput="onDirectPriorityChange(this.value)">
+          </div>
+          <div id="computed-priority-section" style="margin-top:6px;">
+            <div class="card-detail-label">Priority <span id="priority-formula-label" style="font-size:10px;color:#444;">(impact+10−effort)÷2</span></div>
+            <div id="card-detail-computed-priority" style="font-size:22px;font-weight:700;color:#aafa9a;letter-spacing:0.05em;">—</div>
+          </div>
         </div>
         <div class="card-detail-section">
           <div class="card-detail-label">Cover Color</div>
@@ -1631,7 +1666,11 @@
         <!-- Comment compose -->
         <div class="comment-compose">
           <textarea id="comment-input" placeholder="Write a comment…" rows="2"></textarea>
-          <button id="btn-add-comment" class="btn-primary">Comment</button>
+          <div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;">
+            <button id="btn-attach-comment-image" title="Attach photo" style="background:none;border:1px solid #2a2a4a;color:#888;padding:4px 9px;border-radius:4px;cursor:pointer;font-size:13px;">📎</button>
+            <input type="file" id="comment-image-input" accept="image/*" style="display:none;">
+            <button id="btn-add-comment" class="btn-primary">Comment</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2741,6 +2780,38 @@
       body.appendChild(pBadge);
     }
 
+    // Impact / Effort / Priority mini bars — always shown
+    const impact = card.impact;
+    const effort = card.effort;
+    const cpBar = card.computed_priority ?? card.direct_priority;
+    const barsEl = document.createElement('div');
+    barsEl.className = 'card-score-bars';
+    const mkBar = (label, value, color) => {
+      const row = document.createElement('div');
+      row.className = 'card-score-bar-row';
+      const lbl = document.createElement('span');
+      lbl.className = 'card-score-bar-label';
+      lbl.textContent = label;
+      const track = document.createElement('div');
+      track.className = 'card-score-bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'card-score-bar-fill';
+      fill.style.cssText = `width:${value != null ? value * 10 : 0}%;background:${color};`;
+      track.appendChild(fill);
+      const val = document.createElement('span');
+      val.className = 'card-score-bar-val';
+      val.style.color = value != null ? color : '#333';
+      val.textContent = value != null ? value : '—';
+      row.appendChild(lbl);
+      row.appendChild(track);
+      row.appendChild(val);
+      barsEl.appendChild(row);
+    };
+    mkBar('I', impact, '#4a7cc8');
+    mkBar('E', effort, '#c8962a');
+    mkBar('P', cpBar, '#7ade7a');
+    body.appendChild(barsEl);
+
     // Meta row (number, description indicator, due date)
     const meta = document.createElement('div');
     meta.className = 'task-card-meta';
@@ -3130,7 +3201,7 @@
   }
 
   // Render comment text — supports external image URLs from GitHub markdown
-  function renderCommentMarkdown(text) {
+  function renderCommentMarkdown(text, imageB64, imageMime) {
     if (!text) return '';
     // Resolve raw HTML <img> tags before escaping (GitHub sometimes embeds them)
     // Capture them, replace with placeholders, then restore after escaping
@@ -3146,6 +3217,16 @@
 
     // Restore <img> placeholders
     s = s.replace(/\x00IMG(\d+)\x00/g, (_, i) => imgs[parseInt(i)]);
+
+    // Inline comment image: ![alt](comment-img)
+    if (imageB64 && imageMime) {
+      s = s.replace(/!\[([^\]]*)\]\(comment-img\)/g, (_, alt) => {
+        const safeAlt = alt.replace(/"/g, '&quot;');
+        return `<img src="data:${imageMime};base64,${imageB64}" alt="${safeAlt}" style="max-width:100%;height:auto;border-radius:4px;margin:4px 0;display:block;cursor:pointer;" onclick="openLightbox(this.src)">`;
+      });
+    } else {
+      s = s.replace(/!\[([^\]]*)\]\(comment-img\)/g, '');
+    }
 
     // Markdown images with external URLs: ![alt](https://...)
     s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^)]+)\)/g, (_, alt, url) => {
@@ -3328,6 +3409,8 @@
       if (useDirectPriority) {
         dpSection.style.display = '';
         cpSection.style.display = 'none';
+        document.getElementById('impact-section').style.display = 'none';
+        document.getElementById('effort-section').style.display = 'none';
         const dpSlider = document.getElementById('card-detail-direct-priority');
         const dpVal = card.direct_priority != null ? card.direct_priority : 0;
         dpSlider.value = dpVal;
@@ -3335,10 +3418,13 @@
       } else {
         dpSection.style.display = 'none';
         cpSection.style.display = '';
+        document.getElementById('impact-section').style.display = '';
+        document.getElementById('effort-section').style.display = '';
         formulaLabel.style.display = '';
       }
       refreshComputedPriority(impactSet || effortSet ? card.computed_priority : null);
       document.getElementById('comment-input').value = '';
+      _clearCommentCompose();
       renderLabelPicker(card.labels || []);
       renderAssigneePicker(spaceMembers, card.assignee || null);
       renderCoverPicker(card.cover_color || null);
@@ -3434,6 +3520,9 @@
   function onDirectPriorityChange(val) {
     const v = parseInt(val, 10);
     document.getElementById('direct-priority-val-display').textContent = v;
+    // Hide impact/effort — direct priority is now active
+    document.getElementById('impact-section').style.display = 'none';
+    document.getElementById('effort-section').style.display = 'none';
     clearTimeout(_directPriorityDebounce);
     _directPriorityDebounce = setTimeout(async () => {
       if (!_cardDetailCtx) return;
@@ -3441,6 +3530,27 @@
       try { await invoke('set_direct_priority_cmd', { boardId, cardId, value: v }); }
       catch (e) { console.error('set_direct_priority_cmd failed', e); }
     }, 400);
+  }
+
+  async function clearPriorityFields() {
+    if (!_cardDetailCtx) return;
+    const { boardId, cardId } = _cardDetailCtx;
+    try {
+      await invoke('clear_priority_cmd', { boardId, cardId });
+    } catch (e) { console.error('clear_priority_cmd failed', e); }
+    // Reset all sliders and displays
+    document.getElementById('card-detail-impact').value = 0;
+    document.getElementById('card-detail-effort').value = 0;
+    document.getElementById('card-detail-direct-priority').value = 0;
+    document.getElementById('impact-val-display').textContent = '—';
+    document.getElementById('effort-val-display').textContent = '—';
+    document.getElementById('direct-priority-val-display').textContent = '—';
+    // Show all three sections in clean state
+    document.getElementById('impact-section').style.display = '';
+    document.getElementById('effort-section').style.display = '';
+    document.getElementById('direct-priority-section').style.display = '';
+    document.getElementById('computed-priority-section').style.display = '';
+    refreshComputedPriority(null);
   }
 
   function renderSubtasks(card) {
@@ -3660,7 +3770,7 @@
         author.textContent = shortKey(item.data.author);
         const text = document.createElement('div');
         text.className = 'comment-text';
-        text.innerHTML = renderCommentMarkdown(item.data.text);
+        text.innerHTML = renderCommentMarkdown(item.data.text, item.data.image_b64, item.data.image_mime);
         const footer = document.createElement('div');
         footer.className = 'comment-footer';
         const time = document.createElement('span');
@@ -3728,6 +3838,15 @@
         footer.appendChild(delBtn);
         commentBody.appendChild(author);
         commentBody.appendChild(text);
+        if (item.data.image_b64 && item.data.image_mime) {
+          const thumb = document.createElement('img');
+          thumb.src = `data:${item.data.image_mime};base64,${item.data.image_b64}`;
+          thumb.alt = item.data.image_name || 'photo';
+          thumb.style.cssText = 'max-height:72px;max-width:100%;border-radius:4px;margin:4px 0;cursor:pointer;display:block;border:1px solid #2a2a4a;';
+          thumb.title = 'Click to expand';
+          thumb.onclick = () => openLightbox(thumb.src);
+          commentBody.appendChild(thumb);
+        }
         commentBody.appendChild(footer);
         div.appendChild(commentBody);
         el.appendChild(div);
@@ -3913,14 +4032,54 @@
       .map(el => el.dataset.label);
   }
 
+  let _commentImage = null; // { b64, mime, name }
+
+  document.getElementById('btn-attach-comment-image').onclick = () => {
+    document.getElementById('comment-image-input').click();
+  };
+
+  document.getElementById('comment-image-input').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 4 * 1024 * 1024) {
+      showAlert('Image exceeds 4 MB limit (file is ' + (file.size / 1024 / 1024).toFixed(1) + ' MB).');
+      e.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const dataUrl = ev.target.result;
+      const commaIdx = dataUrl.indexOf(',');
+      const b64 = dataUrl.slice(commaIdx + 1);
+      _commentImage = { b64, mime: file.type, name: file.name };
+      const ta = document.getElementById('comment-input');
+      const marker = `![${file.name}](comment-img)`;
+      const start = ta.selectionStart;
+      const end = ta.selectionEnd;
+      ta.value = ta.value.slice(0, start) + marker + ta.value.slice(end);
+      ta.selectionStart = ta.selectionEnd = start + marker.length;
+      ta.focus();
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  });
+
   document.getElementById('btn-add-comment').onclick = async () => {
     if (!_cardDetailCtx) return;
     const { boardId, cardId } = _cardDetailCtx;
     const text = document.getElementById('comment-input').value.trim();
-    if (!text) return;
+    const hasMarker = text.includes('(comment-img)');
+    const sendImage = hasMarker && _commentImage;
+    if (!text && !sendImage) return;
     try {
-      await invoke('add_comment_cmd', { boardId, cardId, text });
+      await invoke('add_comment_cmd', {
+        boardId, cardId, text,
+        imageB64: sendImage ? _commentImage.b64 : null,
+        imageMime: sendImage ? _commentImage.mime : null,
+        imageName: sendImage ? _commentImage.name : null,
+      });
       document.getElementById('comment-input').value = '';
+      _commentImage = null;
       const refreshed = await invoke('get_card_cmd', { boardId, cardId });
       renderActivityFeed(refreshed, boardId, cardId);
     } catch (e) { showAlert('Error adding comment: ' + e); }
@@ -3929,6 +4088,39 @@
   document.getElementById('comment-input').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       document.getElementById('btn-add-comment').click();
+    }
+  });
+
+  document.getElementById('comment-input').addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (!file) return;
+        if (file.size > 4 * 1024 * 1024) {
+          showAlert('Pasted image exceeds 4 MB limit.');
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target.result;
+          const commaIdx = dataUrl.indexOf(',');
+          const b64 = dataUrl.slice(commaIdx + 1);
+          const name = 'pasted-image.png';
+          _commentImage = { b64, mime: item.type, name };
+          const ta = document.getElementById('comment-input');
+          const marker = `![${name}](comment-img)`;
+          const start = ta.selectionStart;
+          const end = ta.selectionEnd;
+          ta.value = ta.value.slice(0, start) + marker + ta.value.slice(end);
+          ta.selectionStart = ta.selectionEnd = start + marker.length;
+          ta.focus();
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
     }
   });
 
@@ -3956,13 +4148,20 @@
           }
         }
       }
+      _clearCommentCompose();
       closeModal('modal-card-detail');
       _cardDetailCtx = null;
       await loadBoardColumns(boardId);
     } catch (e) { showAlert('Error saving card: ' + e); }
   };
 
+  function _clearCommentCompose() {
+    _commentImage = null;
+    document.getElementById('comment-input').value = '';
+  }
+
   document.getElementById('btn-card-detail-cancel').onclick = () => {
+    _clearCommentCompose();
     closeModal('modal-card-detail');
     _cardDetailCtx = null;
   };
@@ -4057,6 +4256,7 @@
   // Reload board when closing card detail (to refresh checklist chips)
   document.getElementById('modal-card-detail').addEventListener('click', (e) => {
     if (e.target === document.getElementById('modal-card-detail') && _cardDetailCtx) {
+      _clearCommentCompose();
       const { boardId } = _cardDetailCtx;
       closeModal('modal-card-detail');
       _cardDetailCtx = null;
@@ -4293,8 +4493,8 @@
     if (e.key === 'Escape') closeModal('modal-add-column');
   };
 
-  document.getElementById('btn-export-board').onclick = () => exportBoard();
-  document.getElementById('btn-import-board').onclick = () => {
+  document.getElementById('btn-export-board').onclick = () => { closeBoardActionsMenu(); exportBoard(); };
+  document.getElementById('btn-import-board').onclick = () => { closeBoardActionsMenu();
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
@@ -5389,16 +5589,21 @@
     document.getElementById('cli-mismatch-banner').classList.remove('visible');
   }
 
+  function openReleasesPage() {
+    invoke('open_url_cmd', { url: 'https://github.com/nokhodian/monotask/releases' }).catch(() => {});
+  }
+
   async function updateCli() {
     const btn = document.getElementById('btn-update-cli');
+    const hint = document.getElementById('cli-mismatch-hint');
     btn.disabled = true;
     btn.textContent = 'Updating…';
     try {
       await invoke('install_cli_cmd');
       document.getElementById('cli-mismatch-banner').classList.remove('visible');
-      showAlert('CLI updated successfully. Run `monotask --version` to confirm.');
     } catch (e) {
-      showAlert('CLI update failed: ' + e + '\n\nRun manually: cargo install --git https://github.com/nokhodian/monotask monotask-cli');
+      hint.innerHTML = '⚠️ Auto-update failed. Update manually: <code>brew upgrade monotask</code> — or download from the <a href="#" onclick="openReleasesPage(); return false;">releases page</a>.';
+      btn.style.display = 'none';
     } finally {
       btn.disabled = false;
       btn.textContent = 'Update CLI';
@@ -5614,6 +5819,19 @@
   let githubPollTimer = null;
   let githubDebounceTimer = null;
   let githubLinked = false;
+
+  function toggleBoardActionsMenu(e) {
+    e.stopPropagation();
+    const menu = document.getElementById('board-actions-menu');
+    if (menu) menu.classList.toggle('open');
+  }
+  function closeBoardActionsMenu() {
+    const menu = document.getElementById('board-actions-menu');
+    if (menu) menu.classList.remove('open');
+  }
+  document.addEventListener('click', function(e) {
+    if (!e.target.closest('#board-actions-wrap')) closeBoardActionsMenu();
+  });
 
   function openIntegrationsModal() {
     const m = document.getElementById('github-integrations-modal');
@@ -5853,10 +6071,20 @@
       modal.querySelector('#preview-card-title').textContent = card.title;
       modal.querySelector('#preview-card-num').textContent = card.number ? '#' + card.number : '';
 
-      // Description
+      // Description — render markdown with inline images
       const descEl = modal.querySelector('#preview-card-desc');
-      descEl.textContent = card.description || '';
-      descEl.style.display = card.description ? '' : 'none';
+      const previewAttachments = {};
+      for (const att of (card.attachments || [])) {
+        if (att.id) previewAttachments[att.id] = att;
+      }
+      if (card.description) {
+        descEl.innerHTML = renderMarkdown(card.description, previewAttachments);
+        descEl.style.whiteSpace = '';
+        descEl.style.display = '';
+      } else {
+        descEl.innerHTML = '';
+        descEl.style.display = 'none';
+      }
 
       // Labels
       const labelsEl = modal.querySelector('#preview-card-labels');
@@ -5910,10 +6138,10 @@
           const rawText = c.text || '';
           const colonIdx = rawText.indexOf(': ');
           const displayText = (colonIdx > 0 && rawText.startsWith('@')) ? rawText.slice(colonIdx + 2) : rawText;
-          textEl.innerHTML = renderCommentMarkdown(displayText);
+          textEl.innerHTML = renderCommentMarkdown(displayText, c.image_b64, c.image_mime);
 
           body.appendChild(authorEl);
-          body.appendChild(textEl);
+          if (displayText || (c.image_b64 && c.image_mime)) body.appendChild(textEl);
           row.appendChild(av);
           row.appendChild(body);
           commentsEl.appendChild(row);
