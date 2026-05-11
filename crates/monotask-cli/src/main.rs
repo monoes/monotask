@@ -1759,7 +1759,7 @@ fn print_ai_help() {
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 1.1.5
+Version: 1.1.6
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 

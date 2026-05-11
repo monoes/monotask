@@ -1320,6 +1320,7 @@
               <span class="bai-icon">&#8593;</span> Import
             </button>
             <div class="board-action-sep"></div>
+            <div style="padding:4px 14px 2px;font-size:10px;font-weight:600;color:#444;text-transform:uppercase;letter-spacing:0.08em;">Integrations</div>
             <button class="board-action-item" aria-label="GitHub integration" onclick="closeBoardActionsMenu();openIntegrationsModal()">
               <span class="bai-icon">&#9889;</span> GitHub
             </button>
@@ -2807,10 +2808,14 @@
       row.appendChild(val);
       barsEl.appendChild(row);
     };
-    mkBar('I', impact, '#4a7cc8');
-    mkBar('E', effort, '#c8962a');
-    mkBar('P', cpBar, '#7ade7a');
-    body.appendChild(barsEl);
+    if (cpBar != null) {
+      mkBar('P', cpBar, '#7ade7a');
+      body.appendChild(barsEl);
+    } else if (impact != null || effort != null) {
+      if (impact != null) mkBar('I', impact, '#4a7cc8');
+      if (effort != null) mkBar('E', effort, '#c8962a');
+      body.appendChild(barsEl);
+    }
 
     // Meta row (number, description indicator, due date)
     const meta = document.createElement('div');
@@ -6086,6 +6091,70 @@
         descEl.style.display = 'none';
       }
 
+      // Subtasks / Prerequisites / Checklists
+      const structEl = modal.querySelector('#preview-card-struct');
+      structEl.innerHTML = '';
+      const subtasks = card.subtasks || [];
+      const prereqs = card.prerequisites || [];
+      const checklists = card.checklists || [];
+      const hasStruct = subtasks.length || prereqs.length || checklists.length;
+      if (hasStruct) {
+        const mkSection = (title) => {
+          const hdr = document.createElement('div');
+          hdr.style.cssText = 'font-size:11px;font-weight:600;color:#555;text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;';
+          hdr.textContent = title;
+          structEl.appendChild(hdr);
+        };
+        if (subtasks.length) {
+          mkSection('Subtasks');
+          const ul = document.createElement('ul');
+          ul.style.cssText = 'margin:0 0 12px;padding-left:16px;list-style:disc;';
+          for (const s of subtasks) {
+            const li = document.createElement('li');
+            li.style.cssText = 'font-size:13px;color:#b0b0cc;margin-bottom:4px;';
+            li.textContent = (s.number ? '#' + s.number + ' ' : '') + s.title;
+            ul.appendChild(li);
+          }
+          structEl.appendChild(ul);
+        }
+        if (prereqs.length) {
+          mkSection('Prerequisites');
+          const ul = document.createElement('ul');
+          ul.style.cssText = 'margin:0 0 12px;padding-left:16px;list-style:disc;';
+          for (const p of prereqs) {
+            const li = document.createElement('li');
+            li.style.cssText = 'font-size:13px;color:#b0b0cc;margin-bottom:4px;';
+            li.textContent = (p.number ? '#' + p.number + ' ' : '') + p.title;
+            ul.appendChild(li);
+          }
+          structEl.appendChild(ul);
+        }
+        if (checklists.length) {
+          for (const cl of checklists) {
+            mkSection(cl.title || 'Checklist');
+            const ul = document.createElement('ul');
+            ul.style.cssText = 'margin:0 0 12px;padding-left:0;list-style:none;';
+            for (const it of (cl.items || [])) {
+              const li = document.createElement('li');
+              li.style.cssText = 'display:flex;align-items:center;gap:7px;font-size:13px;color:' + (it.checked ? '#555' : '#b0b0cc') + ';margin-bottom:5px;';
+              const cb = document.createElement('span');
+              cb.style.cssText = 'width:13px;height:13px;border-radius:3px;border:1px solid ' + (it.checked ? '#4a7c4a' : '#3a3a5a') + ';background:' + (it.checked ? '#2a4a2a' : 'transparent') + ';display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:9px;color:#7ade7a;';
+              if (it.checked) cb.textContent = '✓';
+              li.appendChild(cb);
+              const txt = document.createElement('span');
+              txt.style.textDecoration = it.checked ? 'line-through' : '';
+              txt.textContent = it.text;
+              li.appendChild(txt);
+              ul.appendChild(li);
+            }
+            structEl.appendChild(ul);
+          }
+        }
+        structEl.style.display = '';
+      } else {
+        structEl.style.display = 'none';
+      }
+
       // Labels
       const labelsEl = modal.querySelector('#preview-card-labels');
       labelsEl.innerHTML = '';
@@ -6518,6 +6587,8 @@
     </div>
     <!-- Description -->
     <div id="preview-card-desc" style="padding:16px 24px;color:#b0b0cc;font-size:14px;line-height:1.6;white-space:pre-wrap;word-break:break-word;border-bottom:1px solid #1a1a30;"></div>
+    <!-- Subtasks / Prerequisites / Checklists -->
+    <div id="preview-card-struct" style="padding:14px 24px;border-bottom:1px solid #1a1a30;display:none;"></div>
     <!-- Comments -->
     <div style="padding:16px 24px 0;">
       <div style="font-size:12px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:14px;">Comments</div>
