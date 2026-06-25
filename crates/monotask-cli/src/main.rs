@@ -411,7 +411,7 @@ enum GithubCommands {
         /// The PAT token (ghp_…). Reads from stdin if not given.
         token: Option<String>,
     },
-    /// Show token and connection status
+    /// Show whether a token is saved (no network check)
     Status,
     /// Link a board to a GitHub repository
     Link {
@@ -2189,8 +2189,9 @@ Comment thread management for cards.
 ### card comment add <BOARD_ID> <CARD_ID> <TEXT>
   --json   Output JSON
 
-  Adds a comment to the card. Author is the local identity.
-  JSON output:  {"id":"<uuid>","author":"<str>","text":"<str>",
+  Adds a comment to the card. Author field is set to "placeholder" until
+  Phase 3 wires real identity.
+  JSON output:  {"id":"<uuid>","author":"placeholder","text":"<str>",
                  "created_at":"<hlc>","deleted":false,
                  "image_b64":null,"image_mime":null,"image_name":null}
 
@@ -2212,7 +2213,7 @@ Comment thread management for cards.
   --json   Output JSON
 
   Replaces the text of an existing comment.
-  JSON output:  {"id":"<uuid>","text":"<new_text>"}
+  JSON output:  {"edited":"<comment_id>"}
 
 ────────────────────────────────────────────────────────────────────────────────
 ## card subtask
@@ -2400,7 +2401,8 @@ Bidirectional sync with GitHub Issues. Requires a GitHub Personal Access Token.
   The token needs repo scope (read/write issues and comments).
 
 ### github status
-  Shows the stored token (masked) and verifies connectivity.
+  Shows whether a GitHub token is saved locally. Does not print the token
+  or make any network call. To verify connectivity, re-run `github connect`.
 
 ### github link <BOARD_ID> <OWNER> <REPO> --done-col <COL_ID>
   Links a board to a GitHub repository.
@@ -2571,23 +2573,23 @@ COMMON AGENT WORKFLOWS
 ### Workflow: Collaborative space setup (two users, A and B)
   # --- User A ---
   SPACE=$(monotask space create "Team" | awk '{print $NF}' | tr -d '()')
-  monotaskspace boards add $SPACE $BOARD
-  monotaskspace invite export $SPACE invite.space
+  monotask space boards add $SPACE $BOARD
+  monotask space invite export $SPACE invite.space
   # Share invite.space with User B
 
   # --- User B ---
-  monotaskspace join invite.space
-  monotaskspace boards list $SPACE   # see boards shared by A
+  monotask space join invite.space
+  monotask space boards list $SPACE   # see boards shared by A
 
 ### Workflow: Add a checklist to a card
-  CL=$(monotaskchecklist add $BOARD $CARD "Definition of Done" --json | jq -r .id)
-  ITEM=$(monotaskchecklist item-add $BOARD $CARD $CL "Write tests" --json | jq -r .id)
-  monotaskchecklist item-check $BOARD $CARD $CL $ITEM
+  CL=$(monotask checklist add $BOARD $CARD "Definition of Done" --json | jq -r .id)
+  ITEM=$(monotask checklist item-add $BOARD $CARD $CL "Write tests" --json | jq -r .id)
+  monotask checklist item-check $BOARD $CARD $CL $ITEM
 
 ### Workflow: Comment thread
   monotask card comment add $BOARD $CARD "Starting work on this"
   monotask card comment add $BOARD $CARD "Blocked on API access"
-  monotaskcard comment list $BOARD $CARD --json
+  monotask card comment list $BOARD $CARD --json
 
 --------------------------------------------------------------------------------
 ERROR HANDLING
