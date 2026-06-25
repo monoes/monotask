@@ -215,6 +215,39 @@ pub fn run_migrations_v6(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn run_migrations_v7(conn: &Connection) -> Result<()> {
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap_or(0);
+    if version >= 7 {
+        return Ok(());
+    }
+    conn.execute_batch("
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS card_custom_field_index (
+            board_id    TEXT NOT NULL,
+            card_id     TEXT NOT NULL,
+            field_id    TEXT NOT NULL,
+            value_text  TEXT,
+            value_num   REAL,
+            value_date  TEXT,
+            is_default  INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (board_id, card_id, field_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ccfi_board_field_text
+            ON card_custom_field_index (board_id, field_id, value_text);
+        CREATE INDEX IF NOT EXISTS idx_ccfi_board_field_num
+            ON card_custom_field_index (board_id, field_id, value_num)
+            WHERE value_num IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_ccfi_board_field_date
+            ON card_custom_field_index (board_id, field_id, value_date)
+            WHERE value_date IS NOT NULL;
+        PRAGMA user_version = 7;
+        COMMIT;
+    ")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod space_schema_tests {
     use super::*;
@@ -280,6 +313,32 @@ mod space_schema_tests {
         assert_eq!(role, "dev");
         // idempotent
         run_migrations_v2(&conn).unwrap();
+    }
+
+    #[test]
+    fn v7_migration_adds_card_custom_field_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations_v2(&conn).unwrap();
+        run_migrations_v3(&conn).unwrap();
+        run_migrations_v4(&conn).unwrap();
+        run_migrations_v5(&conn).unwrap();
+        run_migrations_v6(&conn).unwrap();
+        run_migrations_v7(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO card_custom_field_index
+             (board_id, card_id, field_id, value_text, value_num, value_date, is_default)
+             VALUES ('b1', 'c1', 'f1', 'Qualified', NULL, NULL, 0)",
+            [],
+        ).unwrap();
+        let val: String = conn.query_row(
+            "SELECT value_text FROM card_custom_field_index WHERE card_id='c1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, "Qualified");
+        // idempotent
+        run_migrations_v7(&conn).unwrap();
     }
 
     #[test]

@@ -31,6 +31,7 @@ pub struct Card {
     pub effort: Option<u8>,
     pub direct_priority: Option<u8>,
     pub github_issue_number: Option<u64>,
+    pub custom_fields: std::collections::HashMap<String, String>,
 }
 
 pub fn compute_priority(impact: u8, effort: u8) -> u8 {
@@ -107,6 +108,7 @@ pub fn create_card(
     doc.put_object(&card_obj, "checklists", ObjType::List)?;
     doc.put_object(&card_obj, "related", ObjType::Map)?;
     doc.put_object(&card_obj, "attachments", ObjType::Map)?;
+    doc.put_object(&card_obj, "custom_fields", ObjType::Map)?;
     crate::column::append_card_to_column(doc, col_id, &card_id)?;
     Ok(Card {
         id: card_id,
@@ -188,6 +190,19 @@ pub fn read_card(doc: &AutoCommit, card_id: &str) -> Result<Card> {
     let effort = get_u8_card_field(doc, &card_obj, "effort");
     let direct_priority = get_u8_card_field(doc, &card_obj, "direct_priority");
     let github_issue_number = get_u64_card_field(doc, &card_obj, "github_issue_number");
+    let custom_fields = match doc.get(&card_obj, "custom_fields")? {
+        Some((_, cf_map)) => {
+            let keys: Vec<String> = doc.keys(&cf_map).map(|k| k.to_string()).collect();
+            let mut m = std::collections::HashMap::new();
+            for key in keys {
+                if let Some(val) = crate::get_string(doc, &cf_map, &key)? {
+                    m.insert(key, val);
+                }
+            }
+            m
+        }
+        None => std::collections::HashMap::new(),
+    };
     Ok(Card {
         id: card_id.to_string(),
         title,
@@ -207,6 +222,7 @@ pub fn read_card(doc: &AutoCommit, card_id: &str) -> Result<Card> {
         effort,
         direct_priority,
         github_issue_number,
+        custom_fields,
         ..Default::default()
     })
 }
@@ -378,6 +394,7 @@ pub fn copy_card(
     doc.put_object(&card_obj, "checklists", ObjType::List)?;
     doc.put_object(&card_obj, "related", ObjType::Map)?;
     doc.put_object(&card_obj, "attachments", ObjType::Map)?;
+    doc.put_object(&card_obj, "custom_fields", ObjType::Map)?;
 
     // Append to target column
     crate::column::append_card_to_column(doc, target_col_id, &new_card_id)?;

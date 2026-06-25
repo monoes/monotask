@@ -58,6 +58,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: LinearCommands,
     },
+    /// Manage board-level custom field definitions
+    Field {
+        #[command(subcommand)]
+        cmd: FieldCommands,
+    },
     /// Start P2P sync daemon
     Sync {
         /// Run in background (writes PID to data dir)
@@ -106,6 +111,8 @@ enum BoardCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Show board schema: columns and custom field definitions
+    Schema { board_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
@@ -123,8 +130,17 @@ enum ColumnCommands {
 #[derive(Subcommand)]
 enum CardCommands {
     /// Create a card in a column
-    Create { board_id: String, col_id: String, title: String, #[arg(long)] json: bool },
-    /// List all non-deleted, non-archived cards. Filter with --col and/or --label. --json adds col_id/col_title per card.
+    Create {
+        board_id: String,
+        col_id: String,
+        title: String,
+        /// Set custom field values at creation (FIELD_NAME_OR_UUID=VALUE, repeat for multiple)
+        #[arg(long = "field")]
+        fields: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all non-deleted, non-archived cards. Filter with --col, --label, and/or --where.
     List {
         board_id: String,
         /// Only return cards in this column ID
@@ -133,6 +149,9 @@ enum CardCommands {
         /// Only return cards that have this label (exact match)
         #[arg(long)]
         label: Option<String>,
+        /// Filter by custom field (FIELD_REF=VALUE or FIELD_REF~SUBSTRING, repeat for AND)
+        #[arg(long = "where")]
+        filters: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -191,6 +210,53 @@ enum CardCommands {
     Prerequisite {
         #[command(subcommand)]
         cmd: PrerequisiteCommands,
+    },
+    /// Set a custom field value on a card. FIELD_REF may be field name or UUID.
+    FieldSet {
+        board_id: String,
+        card_id: String,
+        /// Field name or UUID
+        field_ref: String,
+        value: String,
+        #[arg(long)] json: bool,
+    },
+    /// Get the value of a custom field on a card
+    FieldGet {
+        board_id: String,
+        card_id: String,
+        /// Field name or UUID
+        field_ref: String,
+        #[arg(long)] json: bool,
+    },
+    /// Clear a custom field value from a card
+    FieldClear {
+        board_id: String,
+        card_id: String,
+        /// Field name or UUID
+        field_ref: String,
+        #[arg(long)] json: bool,
+    },
+    /// List all custom field values on a card with resolved field names
+    FieldList {
+        board_id: String,
+        card_id: String,
+        #[arg(long)] json: bool,
+    },
+    /// Create-or-update a card matching a custom field value (CRM upsert)
+    Upsert {
+        board_id: String,
+        col_id: String,
+        title: String,
+        /// Field to match on (name or UUID) when searching for an existing card
+        #[arg(long)]
+        match_field: String,
+        /// Value the match-field must equal to count as an update
+        #[arg(long)]
+        match_value: String,
+        /// Set field values (FIELD_NAME_OR_UUID=VALUE, repeat for multiple)
+        #[arg(long = "field")]
+        fields: Vec<String>,
+        #[arg(long)] json: bool,
     },
 }
 
@@ -463,6 +529,64 @@ enum LinearCommands {
     Sync { board_id: String },
 }
 
+#[derive(Subcommand)]
+enum FieldCommands {
+    /// Create a new custom field definition on a board
+    Create {
+        board_id: String,
+        /// Human-readable field name (must be unique within the board)
+        name: String,
+        /// Type: text, number, date, select, multi_select, checkbox
+        #[arg(long, default_value = "text")]
+        field_type: String,
+        /// Allowed option (repeat for each choice; required for select/multi_select)
+        #[arg(long = "option")]
+        options: Vec<String>,
+        /// Default value written to new cards when --auto-apply is set
+        #[arg(long)]
+        default_value: Option<String>,
+        /// Write default to every new card automatically at creation time
+        #[arg(long)]
+        auto_apply: bool,
+        #[arg(long)] json: bool,
+    },
+    /// List all (non-archived) field definitions on a board
+    List { board_id: String, #[arg(long)] json: bool },
+    /// Rename a field (by name or UUID)
+    Rename {
+        board_id: String,
+        /// Field UUID or name
+        field_ref: String,
+        new_name: String,
+        #[arg(long)] json: bool,
+    },
+    /// Archive (soft-delete) a field definition
+    Delete {
+        board_id: String,
+        /// Field UUID or name
+        field_ref: String,
+        #[arg(long)] json: bool,
+    },
+    /// Apply the field's default value to all cards that do not have it set yet
+    Backfill {
+        board_id: String,
+        /// Field UUID or name
+        field_ref: String,
+        #[arg(long)] json: bool,
+    },
+    /// Update a field's default_value and/or auto_apply flag
+    Update {
+        board_id: String,
+        /// Field UUID or name
+        field_ref: String,
+        #[arg(long)]
+        default_value: Option<String>,
+        #[arg(long)]
+        auto_apply: Option<bool>,
+        #[arg(long)] json: bool,
+    },
+}
+
 fn data_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
     if let Some(d) = &cli.data_dir {
         return Ok(d.clone());
@@ -592,6 +716,39 @@ async fn main() -> anyhow::Result<()> {
                 if json { println!("{}", serde_json::json!({"deleted": true, "board_id": board_id, "space_id": space})); }
                 else { println!("Deleted board {} from space {}", board_id, space); }
             }
+            BoardCommands::Schema { board_id, json } => {
+                let doc = storage.load_board(&board_id)?;
+                let title = monotask_core::board::get_board_title(&doc).unwrap_or_default();
+                let cols = monotask_core::column::list_columns(&doc)?;
+                let fields = monotask_core::field::list_fields(&doc)?;
+                if json {
+                    let cols_json: Vec<serde_json::Value> = cols.iter()
+                        .map(|c| serde_json::json!({"id": c.id, "title": c.title}))
+                        .collect();
+                    let fields_json: Vec<serde_json::Value> = fields.iter()
+                        .map(|f| serde_json::json!({
+                            "id": f.id, "name": f.name, "type": f.field_type.as_str(),
+                            "options": f.options, "default_value": f.default_value,
+                            "auto_apply": f.auto_apply, "archived": f.archived,
+                        }))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                        "board_id": board_id, "title": title,
+                        "columns": cols_json, "fields": fields_json,
+                    }))?);
+                } else {
+                    println!("Board: {} ({})", title, board_id);
+                    println!("\nColumns ({}):", cols.len());
+                    for c in &cols { println!("  {} — {}", c.id, c.title); }
+                    println!("\nFields ({}):", fields.len());
+                    if fields.is_empty() { println!("  (none)"); }
+                    for f in &fields {
+                        let dv = f.default_value.as_deref().map(|v| format!(" default={v}")).unwrap_or_default();
+                        let aa = if f.auto_apply { " auto_apply" } else { "" };
+                        println!("  {} — {} [{}]{}{}", f.id, f.name, f.field_type.as_str(), dv, aa);
+                    }
+                }
+            }
         },
         Commands::Column { cmd } => match cmd {
             ColumnCommands::Create { board_id, title, json } => {
@@ -628,12 +785,27 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Commands::Card { cmd } => match cmd {
-            CardCommands::Create { board_id, col_id, title, json } => {
+            CardCommands::Create { board_id, col_id, title, fields, json } => {
                 let mut doc = storage.load_board(&board_id)?;
-                // Placeholder until identity system is wired in Phase 3
+                // Parse and validate all --field pairs BEFORE creating the card
+                let field_pairs = parse_field_assignments(&fields)?;
+                let mut resolved_fields: Vec<(monotask_core::field::FieldDefinition, String)> = Vec::new();
+                for (key, value) in field_pairs {
+                    let def = monotask_core::field::resolve_field_ref(&doc, &key)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", key))?;
+                    monotask_core::field::validate_field_value(&def, &value)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    resolved_fields.push((def, value));
+                }
                 let actor_pk = vec![0u8; 32];
                 let members = vec![actor_pk.clone()];
                 let card = monotask_core::card::create_card(&mut doc, &col_id, &title, &actor_pk, &members)?;
+                // Write explicit fields first, then apply auto-apply defaults (explicit beats default)
+                for (def, value) in &resolved_fields {
+                    monotask_core::field::set_card_field(&mut doc, &card.id, &def.id, value)?;
+                }
+                monotask_core::field::apply_default_fields(&mut doc, &card.id)?;
                 storage.save_board(&board_id, &mut doc)?;
                 if json {
                     let number_display = card.number.as_ref().map(|n| n.to_display());
@@ -642,9 +814,35 @@ async fn main() -> anyhow::Result<()> {
                     println!("Created card: {} ({})", card.title, card.id);
                 }
             }
-            CardCommands::List { board_id, col: col_filter, label: label_filter, json } => {
+            CardCommands::List { board_id, col: col_filter, label: label_filter, filters, json } => {
                 use automerge::ReadDoc;
                 let doc = storage.load_board(&board_id)?;
+
+                // Parse --where expressions and resolve field IDs up front
+                let mut field_filters: Vec<(String, monotask_core::field::FieldType, String, String)> = Vec::new();
+                for expr in &filters {
+                    let (field_ref, op, value) = parse_filter_expr(expr)
+                        .ok_or_else(|| anyhow::anyhow!("invalid --where expression '{}'. Use FIELD=VALUE, FIELD>VALUE, FIELD~SUBSTRING etc.", expr))?;
+                    let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", field_ref))?;
+                    field_filters.push((def.id, def.field_type, op, value));
+                }
+
+                // Build set of matching card IDs from field filters (AND semantics)
+                let filter_card_ids: Option<std::collections::HashSet<String>> = if field_filters.is_empty() {
+                    None
+                } else {
+                    let mut sets: Vec<std::collections::HashSet<String>> = Vec::new();
+                    for (field_id, field_type, op, value) in &field_filters {
+                        let ids = storage.query_cards_by_field(&board_id, field_id, field_type, op, value)?;
+                        sets.push(ids.into_iter().collect());
+                    }
+                    // Intersect all sets
+                    let intersection = sets.into_iter().reduce(|a, b| a.intersection(&b).cloned().collect());
+                    intersection
+                };
+
                 let cols = monotask_core::column::list_columns(&doc)?;
                 let mut cards: Vec<(String, String, monotask_core::card::Card)> = Vec::new();
                 for col in &cols {
@@ -662,6 +860,9 @@ async fn main() -> anyhow::Result<()> {
                     for i in 0..doc.length(&card_ids_list) {
                         if let Some((automerge::Value::Scalar(s), _)) = doc.get(&card_ids_list, i)? {
                             if let automerge::ScalarValue::Str(card_id) = s.as_ref() {
+                                if let Some(ref allowed) = filter_card_ids {
+                                    if !allowed.contains(card_id.as_str()) { continue; }
+                                }
                                 if let Ok(card) = monotask_core::card::read_card(&doc, card_id.as_str()) {
                                     if card.deleted || card.archived { continue; }
                                     if let Some(ref lf) = label_filter {
@@ -991,6 +1192,130 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             },
+            CardCommands::FieldSet { board_id, card_id, field_ref, value, json } => {
+                let card_id = storage.resolve_card_ref(&board_id, &card_id)?;
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", field_ref))?;
+                monotask_core::field::validate_field_value(&def, &value)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                monotask_core::field::set_card_field(&mut doc, &card_id, &def.id, &value)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"card_id": card_id, "field_id": def.id, "field_name": def.name, "value": value})); }
+                else { println!("Set {}: {} on card {}", def.name, value, card_id); }
+            }
+            CardCommands::FieldGet { board_id, card_id, field_ref, json } => {
+                let card_id = storage.resolve_card_ref(&board_id, &card_id)?;
+                let doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", field_ref))?;
+                let val = monotask_core::field::get_card_field(&doc, &card_id, &def.id)?;
+                if json {
+                    println!("{}", serde_json::json!({"field_id": def.id, "field_name": def.name, "value": val}));
+                } else {
+                    match val {
+                        Some(v) => println!("{}: {}", def.name, v),
+                        None => println!("{}: (not set)", def.name),
+                    }
+                }
+            }
+            CardCommands::FieldClear { board_id, card_id, field_ref, json } => {
+                let card_id = storage.resolve_card_ref(&board_id, &card_id)?;
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", field_ref))?;
+                monotask_core::field::clear_card_field(&mut doc, &card_id, &def.id)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"cleared": def.id, "card_id": card_id})); }
+                else { println!("Cleared {} from card {}", def.name, card_id); }
+            }
+            CardCommands::FieldList { board_id, card_id, json } => {
+                let card_id = storage.resolve_card_ref(&board_id, &card_id)?;
+                let doc = storage.load_board(&board_id)?;
+                let pairs = monotask_core::field::list_card_fields(&doc, &card_id)?;
+                // Resolve field IDs to names for display
+                let mut out: Vec<serde_json::Value> = Vec::new();
+                for (field_id, value) in pairs {
+                    let name = monotask_core::field::get_field_by_id(&doc, &field_id)
+                        .ok().flatten()
+                        .map(|d| d.name)
+                        .unwrap_or_else(|| field_id.clone());
+                    out.push(serde_json::json!({"field_id": field_id, "name": name, "value": value}));
+                }
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else if out.is_empty() {
+                    println!("No custom fields set.");
+                } else {
+                    for entry in &out {
+                        println!("{}: {}", entry["name"].as_str().unwrap_or(""), entry["value"].as_str().unwrap_or(""));
+                    }
+                }
+            }
+            CardCommands::Upsert { board_id, col_id, title, match_field, match_value, fields, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                // Resolve match field
+                let match_def = monotask_core::field::resolve_field_ref(&doc, &match_field)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("match field '{}' not found on this board", match_field))?;
+                // Parse and validate all --field pairs
+                let field_pairs = parse_field_assignments(&fields)?;
+                let mut resolved_fields: Vec<(monotask_core::field::FieldDefinition, String)> = Vec::new();
+                for (key, value) in field_pairs {
+                    let def = monotask_core::field::resolve_field_ref(&doc, &key)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", key))?;
+                    monotask_core::field::validate_field_value(&def, &value)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    resolved_fields.push((def, value));
+                }
+                // Search existing non-deleted cards for match_field == match_value
+                let cards_map = monotask_core::get_cards_map_readonly(&doc)?;
+                use automerge::ReadDoc;
+                let all_card_ids: Vec<String> = doc.keys(&cards_map).map(|k| k.to_string()).collect();
+                let mut existing_card_id: Option<String> = None;
+                for cid in all_card_ids {
+                    let val = monotask_core::field::get_card_field(&doc, &cid, &match_def.id)?;
+                    if val.as_deref() == Some(&match_value) {
+                        // Verify not deleted
+                        let card_obj = match doc.get(&cards_map, cid.as_str())? {
+                            Some((_, o)) => o, None => continue,
+                        };
+                        let is_deleted = match doc.get(&card_obj, "deleted")? {
+                            Some((automerge::Value::Scalar(s), _)) => matches!(s.as_ref(), automerge::ScalarValue::Boolean(true)),
+                            _ => false,
+                        };
+                        if !is_deleted { existing_card_id = Some(cid); break; }
+                    }
+                }
+                let (card_id, was_created) = if let Some(eid) = existing_card_id {
+                    (eid, false)
+                } else {
+                    let actor_pk = vec![0u8; 32];
+                    let members = vec![actor_pk.clone()];
+                    let card = monotask_core::card::create_card(&mut doc, &col_id, &title, &actor_pk, &members)?;
+                    // Set match field value on new card
+                    monotask_core::field::set_card_field(&mut doc, &card.id, &match_def.id, &match_value)?;
+                    (card.id, true)
+                };
+                for (def, value) in &resolved_fields {
+                    monotask_core::field::set_card_field(&mut doc, &card_id, &def.id, value)?;
+                }
+                if was_created {
+                    monotask_core::field::apply_default_fields(&mut doc, &card_id)?;
+                }
+                storage.save_board(&board_id, &mut doc)?;
+                if json {
+                    println!("{}", serde_json::json!({"card_id": card_id, "created": was_created, "board_id": board_id}));
+                } else if was_created {
+                    println!("Created card {} ({})", title, card_id);
+                } else {
+                    println!("Updated card {}", card_id);
+                }
+            }
             CardCommands::Prerequisite { cmd } => match cmd {
                 PrerequisiteCommands::Add { board_id, card_id, prereq_board_id, prereq_card_id, json } => {
                     if card_id == prereq_card_id && board_id == prereq_board_id {
@@ -1132,6 +1457,90 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("Deleted checklist {checklist_id}");
                 }
+            }
+        },
+        Commands::Field { cmd } => match cmd {
+            FieldCommands::Create { board_id, name, field_type, options, default_value, auto_apply, json } => {
+                use monotask_core::field::FieldType;
+                let ft = FieldType::from_str(&field_type)
+                    .ok_or_else(|| anyhow::anyhow!("unknown field type '{}'. Valid types: text, number, date, select, multi_select, checkbox", field_type))?;
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::create_field(&mut doc, &name, ft, options, default_value, auto_apply)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json {
+                    println!("{}", serde_json::json!({
+                        "id": def.id, "name": def.name, "type": def.field_type.as_str(),
+                        "options": def.options, "default_value": def.default_value,
+                        "auto_apply": def.auto_apply,
+                    }));
+                } else {
+                    println!("Created field: {} ({}) [{}]", def.name, def.id, def.field_type.as_str());
+                }
+            }
+            FieldCommands::List { board_id, json } => {
+                let doc = storage.load_board(&board_id)?;
+                let fields = monotask_core::field::list_fields(&doc)?;
+                let visible: Vec<_> = fields.iter().filter(|f| !f.archived).collect();
+                if json {
+                    let out: Vec<serde_json::Value> = visible.iter().map(|f| serde_json::json!({
+                        "id": f.id, "name": f.name, "type": f.field_type.as_str(),
+                        "options": f.options, "default_value": f.default_value,
+                        "auto_apply": f.auto_apply,
+                    })).collect();
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else if visible.is_empty() {
+                    println!("No fields defined. Use `monotask field create` to add one.");
+                } else {
+                    for f in &visible {
+                        let dv = f.default_value.as_deref().map(|v| format!(" default={v}")).unwrap_or_default();
+                        let aa = if f.auto_apply { " auto_apply" } else { "" };
+                        println!("{} — {} [{}]{}{}", f.id, f.name, f.field_type.as_str(), dv, aa);
+                    }
+                }
+            }
+            FieldCommands::Rename { board_id, field_ref, new_name, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
+                monotask_core::field::rename_field(&mut doc, &def.id, &new_name)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"field_id": def.id, "name": new_name})); }
+                else { println!("Renamed field {} to: {}", def.id, new_name); }
+            }
+            FieldCommands::Delete { board_id, field_ref, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
+                monotask_core::field::archive_field(&mut doc, &def.id)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"archived": def.id})); }
+                else { println!("Archived field {} ({})", def.name, def.id); }
+            }
+            FieldCommands::Backfill { board_id, field_ref, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
+                let count = monotask_core::field::backfill_field_defaults(&mut doc, &def.id)?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"field_id": def.id, "updated_count": count})); }
+                else { println!("Backfilled {} cards with default value for '{}'", count, def.name); }
+            }
+            FieldCommands::Update { board_id, field_ref, default_value, auto_apply, json } => {
+                let mut doc = storage.load_board(&board_id)?;
+                let def = monotask_core::field::resolve_field_ref(&doc, &field_ref)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
+                monotask_core::field::update_field_default(
+                    &mut doc, &def.id,
+                    default_value.as_deref(),
+                    auto_apply,
+                )?;
+                storage.save_board(&board_id, &mut doc)?;
+                if json { println!("{}", serde_json::json!({"field_id": def.id, "ok": true})); }
+                else { println!("Updated field {}", def.name); }
             }
         },
         Commands::Space { cmd } => handle_space(cmd, &mut storage, &identity)?,
@@ -2262,6 +2671,133 @@ Prerequisite management — declares that one card must be done before another.
   JSON output:  {"ok":true}
 
 ────────────────────────────────────────────────────────────────────────────────
+## field
+Custom field definitions are board-scoped typed key-value schemas stored in the
+Automerge document. Field values are stored on each card and indexed in SQLite.
+
+### field create <BOARD_ID> <NAME>
+  --field-type <TYPE>      text (default), number, date, select, multi_select, checkbox
+  --option <VALUE>         Allowed option (repeat; required for select/multi_select)
+  --default-value <VAL>    Default written when --auto-apply is set
+  --auto-apply             Apply default to every new card automatically
+  --json                   Output JSON
+
+  Creates a new field definition. Fields accept names or UUIDs in all other commands.
+  JSON output:  {"id":"<uuid>","name":"<str>","type":"<str>","options":[...],"default_value":<str|null>,"auto_apply":<bool>}
+
+### field list <BOARD_ID>
+  --json
+
+  Lists all non-archived field definitions on a board.
+  JSON output:  [{"id":"<uuid>","name":"<str>","type":"<str>","options":[...],"default_value":<str|null>,"auto_apply":<bool>}, ...]
+
+### field rename <BOARD_ID> <FIELD_REF> <NEW_NAME>
+  --json
+
+  Renames a field. FIELD_REF may be field name (case-insensitive) or UUID.
+  JSON output:  {"field_id":"<uuid>","name":"<str>"}
+
+### field update <BOARD_ID> <FIELD_REF>
+  --default-value <VAL>    New default value
+  --auto-apply <true|false>
+  --json
+
+  Updates a field's default value and/or auto-apply flag without renaming.
+  JSON output:  {"field_id":"<uuid>","ok":true}
+
+### field delete <BOARD_ID> <FIELD_REF>
+  --json
+
+  Archives (soft-deletes) a field. Archived fields are hidden from list/schema
+  but existing card values are preserved.
+  JSON output:  {"archived":"<uuid>"}
+
+### field backfill <BOARD_ID> <FIELD_REF>
+  --json
+
+  Writes the field's default_value to every non-deleted card that does not
+  already have a value set for this field. Returns the count of updated cards.
+  JSON output:  {"field_id":"<uuid>","updated_count":<int>}
+
+────────────────────────────────────────────────────────────────────────────────
+## card field-set / field-get / field-clear / field-list
+
+### card field-set <BOARD_ID> <CARD_ID> <FIELD_REF> <VALUE>
+  --json
+
+  Sets a custom field value on a card. Value is validated against the field type.
+  FIELD_REF may be field name or UUID. CARD_ID may be UUID or card number (e.g. "a7f3-42").
+  JSON output:  {"card_id":"<uuid>","field_id":"<uuid>","field_name":"<str>","value":"<str>"}
+
+### card field-get <BOARD_ID> <CARD_ID> <FIELD_REF>
+  --json
+
+  Gets the current value of a custom field on a card.
+  JSON output:  {"field_id":"<uuid>","field_name":"<str>","value":"<str>"|null}
+
+### card field-clear <BOARD_ID> <CARD_ID> <FIELD_REF>
+  --json
+
+  Removes a custom field value from a card. Does not affect the field definition.
+  JSON output:  {"cleared":"<field_uuid>","card_id":"<uuid>"}
+
+### card field-list <BOARD_ID> <CARD_ID>
+  --json
+
+  Lists all custom field values set on a card with resolved field names.
+  JSON output:  [{"field_id":"<uuid>","name":"<str>","value":"<str>"}, ...]
+
+────────────────────────────────────────────────────────────────────────────────
+## card create (with custom fields)
+
+### card create <BOARD_ID> <COL_ID> <TITLE>
+  --field FIELD_NAME_OR_UUID=VALUE   (repeat for multiple)
+  --json
+
+  Creates a card. If --field is supplied, those values are written first; then
+  auto_apply defaults are applied for any remaining unset fields. Explicit
+  --field values always beat auto-apply defaults.
+  JSON output:  {"id":"<uuid>","title":"<str>","board_id":"<uuid>","number":<str|null>}
+
+────────────────────────────────────────────────────────────────────────────────
+## card list (with custom field filtering)
+
+### card list <BOARD_ID>
+  --col <COL_ID>            Filter to a specific column
+  --label <LABEL>           Filter by label (exact match)
+  --where FIELD_REF=VALUE   Filter by custom field (repeat for AND)
+                            Operators: =  !=  >  >=  <  <=  ~(contains)
+  --json
+
+  --where expressions use AND semantics. Filters are evaluated via the SQLite
+  custom field index (efficient even on large boards). FIELD_REF may be name or UUID.
+  Example: monotask card list $BOARD --where "Stage=Qualified" --where "Amount>10000"
+
+────────────────────────────────────────────────────────────────────────────────
+## card upsert (CRM upsert pattern)
+
+### card upsert <BOARD_ID> <COL_ID> <TITLE>
+  --match-field FIELD_REF   Field to match on when searching for an existing card
+  --match-value VALUE       Value the match-field must equal
+  --field FIELD=VALUE       Set field values (repeat for multiple)
+  --json
+
+  If a non-deleted card exists with match_field == match_value, its fields are
+  updated. Otherwise a new card is created in COL_ID with the title and fields set.
+  On create, auto_apply defaults are applied after explicit --field values.
+  JSON output:  {"card_id":"<uuid>","created":<bool>,"board_id":"<uuid>"}
+
+────────────────────────────────────────────────────────────────────────────────
+## board schema
+
+### board schema <BOARD_ID>
+  --json
+
+  Shows the board's columns and all active custom field definitions in one call.
+  Useful as a first call to discover what fields and columns exist before operating.
+  JSON output:  {"board_id":"<uuid>","title":"<str>","columns":[...],"fields":[...]}
+
+────────────────────────────────────────────────────────────────────────────────
 ## checklist
 Checklists are ordered task lists attached to a card. A card can have multiple
 checklists, each with its own items.
@@ -2499,6 +3035,7 @@ Comment ID    : UUID v4
 Checklist ID  : UUID v4
 Item ID       : UUID v4
 Attachment ID : 6-char hex string (referenced as "img:<id>" in markdown)
+Field ID      : UUID v4  ← CLI also accepts field name in all field commands
 
 --------------------------------------------------------------------------------
 STORAGE
@@ -2516,10 +3053,14 @@ Database tables:
 
 Board data is stored as Automerge CRDT binary documents. The root map contains:
   columns            – list of column objects [{id, title, card_ids[]}]
-  cards              – map of card_id → card object
+  cards              – map of card_id → card object (each card has a custom_fields sub-map)
   members            – map of pubkey → member profile
   actor_card_seq     – map of pubkey → int (per-actor card counter)
   label_definitions  – map of label_id → label object
+  field_definitions  – map of field_id → FieldDefinition object (custom fields)
+
+SQLite index:
+  card_custom_field_index  board_id | card_id | field_id | value_text | value_num | value_date
 
 --------------------------------------------------------------------------------
 COMMON AGENT WORKFLOWS
@@ -2581,6 +3122,37 @@ COMMON AGENT WORKFLOWS
   monotask space join invite.space
   monotask space boards list $SPACE   # see boards shared by A
 
+### Workflow: Build a CRM pipeline with custom fields
+  # 1. Create the board and columns
+  SPACE=$(monotask space list | awk 'NR==1{print $1}')
+  BOARD=$(monotask board create "CRM Pipeline" --space $SPACE --json | jq -r .id)
+  NEW=$(monotask column create $BOARD "New Leads" --json | jq -r .id)
+  QUAL=$(monotask column create $BOARD "Qualified" --json | jq -r .id)
+  WON=$(monotask column create $BOARD "Won" --json | jq -r .id)
+
+  # 2. Define custom fields
+  STAGE=$(monotask field create $BOARD "Stage" --field-type select \
+    --option "Lead" --option "Qualified" --option "Won" \
+    --default-value "Lead" --auto-apply --json | jq -r .id)
+  monotask field create $BOARD "Company" --field-type text --json
+  monotask field create $BOARD "Amount" --field-type number --json
+  monotask field create $BOARD "Close Date" --field-type date --json
+
+  # 3. Add leads with field values
+  monotask card create $BOARD $NEW "Acme Corp" \
+    --field "Company=Acme Corp" --field "Amount=25000" --json
+
+  # 4. Upsert a lead (create or update based on Company)
+  monotask card upsert $BOARD $NEW "Globex" \
+    --match-field Company --match-value "Globex" \
+    --field "Amount=50000" --field "Stage=Qualified" --json
+
+  # 5. Query qualified leads with amount > 20000
+  monotask card list $BOARD --where "Stage=Qualified" --where "Amount>20000" --json
+
+  # 6. Show full schema
+  monotask board schema $BOARD --json
+
 ### Workflow: Add a checklist to a card
   CL=$(monotask checklist add $BOARD $CARD "Definition of Done" --json | jq -r .id)
   ITEM=$(monotask checklist item-add $BOARD $CARD $CL "Write tests" --json | jq -r .id)
@@ -2619,9 +3191,51 @@ LIMITATIONS & NOTES FOR AGENTS
   invites that include full space state.
 - Data directory must be consistent across all CLI invocations for the same
   instance. If using --data-dir, always pass the same path.
+- Custom field definitions are stored per-board in the Automerge document.
+  Use `board schema` as a first call to discover columns + fields before writing.
+- `card field-set` validates the value against the field type before writing.
+  Number fields must be parseable as f64; Date fields must be YYYY-MM-DD;
+  Select fields must match one of the declared options.
+- `card upsert` does a linear scan to match cards by field value. For large boards,
+  prefer `card list --where` (uses SQLite index) to locate IDs first.
+- `field backfill` only sets the field on cards that currently have no value for it.
+  Cards with existing values (even if different from the default) are left unchanged.
 
 ================================================================================
 "##);
+}
+
+/// Parse a list of "KEY=VALUE" strings from --field flags.
+/// KEY is a field name or UUID; VALUE is the string to store.
+fn parse_field_assignments(pairs: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+    let mut result = Vec::new();
+    for pair in pairs {
+        let pos = pair.find('=').ok_or_else(|| anyhow::anyhow!(
+            "invalid --field '{}': expected FIELD_NAME=VALUE", pair
+        ))?;
+        let key = pair[..pos].trim().to_string();
+        let value = pair[pos + 1..].to_string();
+        if key.is_empty() {
+            return Err(anyhow::anyhow!("invalid --field '{}': field name cannot be empty", pair));
+        }
+        result.push((key, value));
+    }
+    Ok(result)
+}
+
+/// Parse a --where expression like "Stage=Qualified", "Amount>10000", "Name~Acme".
+/// Returns (field_ref, operator, value).
+fn parse_filter_expr(expr: &str) -> Option<(String, String, String)> {
+    for op in &[">=", "<=", "!=", ">", "<", "~", "="] {
+        if let Some(pos) = expr.find(op) {
+            let field_ref = expr[..pos].trim().to_string();
+            let value = expr[pos + op.len()..].trim().to_string();
+            if !field_ref.is_empty() {
+                return Some((field_ref, op.to_string(), value));
+            }
+        }
+    }
+    None
 }
 
 fn parse_token_or_file(input: &str) -> anyhow::Result<(String, String, Option<Vec<u8>>)> {
