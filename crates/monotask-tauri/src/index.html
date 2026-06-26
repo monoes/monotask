@@ -706,6 +706,30 @@
     .label-chip.selected { border-color: #fff; }
     .card-detail-num { font-size: 11px; color: #3a3a5a; font-family: monospace; }
 
+    /* Custom Fields */
+    .cf-section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .cf-field-wrap { margin-bottom: 10px; }
+    .cf-field-label { font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; }
+    .cf-input-row { display: flex; align-items: center; gap: 6px; }
+    .cf-input { background: #0d0d1a; border: 1px solid #1e1e3a; color: #ccc; padding: 5px 8px; border-radius: 4px; font-size: 12px; outline: none; flex: 1; min-width: 0; width: 100%; box-sizing: border-box; }
+    .cf-input:focus { border-color: #2e2e5a; }
+    .cf-clear-btn { background: none; border: none; color: #2a2a4a; font-size: 15px; cursor: pointer; padding: 0 3px; line-height: 1; flex-shrink: 0; }
+    .cf-clear-btn:hover { color: #888; }
+    .cf-checkbox-wrap { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; }
+    .cf-chip { display: inline-flex; align-items: center; padding: 3px 8px; background: #1a1a30; border: 1px solid #2a2a4a; border-radius: 12px; font-size: 11px; color: #888; cursor: pointer; user-select: none; transition: background 0.1s; }
+    .cf-chip.active { background: #2a2a5a; border-color: #4a4a8a; color: #e0e0ff; }
+    /* Manage Fields Modal */
+    .manage-fields-modal { display: none; position: fixed; inset: 0; z-index: 400; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; }
+    .manage-fields-modal.visible { display: flex; }
+    .manage-fields-box { background: #16162a; border: 1px solid #2a2a4a; border-radius: 10px; padding: 24px; width: 460px; max-width: 94vw; max-height: 82vh; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.6); }
+    .mf-field-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #1a1a2e; }
+    .mf-field-name { flex: 1; color: #ccc; font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .mf-type-pill { font-size: 9px; color: #666; text-transform: uppercase; background: #1a1a30; border: 1px solid #2a2a4a; padding: 1px 6px; border-radius: 8px; flex-shrink: 0; }
+    .mf-btn { background: none; border: 1px solid #2a2a4a; color: #888; padding: 2px 8px; border-radius: 4px; font-size: 11px; cursor: pointer; flex-shrink: 0; }
+    .mf-btn:hover { background: #2a2a4a; color: #ccc; }
+    .mf-btn.danger:hover { background: #3a1a1a; color: #e06060; border-color: #6a2a2a; }
+    .mf-add-form { margin-top: 16px; padding-top: 16px; border-top: 1px solid #1a1a2e; display: flex; flex-direction: column; gap: 8px; }
+
     /* Activity feed (right panel) */
     .activity-feed-title {
       font-size: 10px; color: #888; text-transform: uppercase;
@@ -1327,6 +1351,9 @@
             <button class="board-action-item" aria-label="Linear integration" onclick="closeBoardActionsMenu();openLinearModal()">
               <span class="bai-icon">&#9651;</span> Linear
             </button>
+            <button class="board-action-item" aria-label="Mail integration" onclick="closeBoardActionsMenu();openMailModal()">
+              <span class="bai-icon">&#9993;</span> Mail
+            </button>
           </div>
         </div>
         <div style="display:flex;gap:4px;margin-left:auto;background:#0d0d1c;border:1px solid #1e1e3a;border-radius:6px;padding:2px;">
@@ -1473,6 +1500,10 @@
           <div class="board-tpl-icon">&#128161;</div>
           <div class="board-tpl-name">Idea Board</div>
         </div>
+        <div class="board-tpl-card" data-tpl="crm-email" title="New Contact · In Progress · Follow Up · Closed — with Email, Last Seen, Provider fields">
+          <div class="board-tpl-icon">&#9993;</div>
+          <div class="board-tpl-name">CRM Email</div>
+        </div>
         <div class="board-tpl-card" data-tpl="empty" title="Start with no columns">
           <div class="board-tpl-icon">&#9723;</div>
           <div class="board-tpl-name">Empty</div>
@@ -1616,6 +1647,14 @@
         <div class="card-detail-section">
           <div class="card-detail-label">Move to Column</div>
           <select id="card-detail-move-col" style="background:#0d0d1a;border:1px solid #1e1e3a;color:#ccc;padding:6px 10px;border-radius:4px;font-size:13px;outline:none;width:100%;"></select>
+        </div>
+        <!-- Custom Fields -->
+        <div class="card-detail-section" id="card-detail-custom-fields-section">
+          <div class="cf-section-header">
+            <div class="card-detail-label" style="margin-bottom:0;">Custom Fields</div>
+            <button onclick="openManageFields()" style="background:none;border:none;color:#888;cursor:pointer;font-size:11px;padding:0;letter-spacing:0.02em;">&#9881; Manage</button>
+          </div>
+          <div id="card-detail-custom-fields"></div>
         </div>
         <!-- Checklists injected here by JS -->
         <div id="card-detail-checklists"></div>
@@ -1774,6 +1813,35 @@
 </div>
 
 <!-- Confirm/Alert modal (replaces native alert/confirm) -->
+<div id="modal-manage-fields" class="manage-fields-modal" onclick="if(event.target===this)closeManageFields()">
+  <div class="manage-fields-box">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="font-size:14px;font-weight:600;color:#eee;">Custom Fields</div>
+      <button onclick="closeManageFields()" style="background:none;border:none;color:#888;font-size:20px;cursor:pointer;padding:0;line-height:1;">&#215;</button>
+    </div>
+    <div id="manage-fields-list"></div>
+    <div class="mf-add-form">
+      <div style="font-size:10px;color:#888;text-transform:uppercase;letter-spacing:0.06em;">Add Field</div>
+      <div style="display:flex;gap:8px;">
+        <input id="mf-new-name" placeholder="Field name" style="flex:1;min-width:0;background:#0d0d1a;border:1px solid #1e1e3a;color:#ccc;padding:6px 10px;border-radius:4px;font-size:12px;outline:none;" />
+        <select id="mf-new-type" style="background:#0d0d1a;border:1px solid #1e1e3a;color:#ccc;padding:6px 8px;border-radius:4px;font-size:12px;outline:none;flex-shrink:0;" onchange="onMfTypeChange()">
+          <option value="text">Text</option>
+          <option value="number">Number</option>
+          <option value="date">Date</option>
+          <option value="select">Select</option>
+          <option value="multi_select">Multi-select</option>
+          <option value="checkbox">Checkbox</option>
+        </select>
+      </div>
+      <div id="mf-options-row" style="display:none;">
+        <input id="mf-new-options" placeholder="Options (comma-separated)" style="width:100%;box-sizing:border-box;background:#0d0d1a;border:1px solid #1e1e3a;color:#ccc;padding:6px 10px;border-radius:4px;font-size:12px;outline:none;" />
+      </div>
+      <div style="display:flex;justify-content:flex-end;">
+        <button onclick="mfAddField()" class="btn-primary" style="font-size:12px;padding:5px 14px;">Add Field</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="modal-confirm" class="modal">
   <div class="modal-box" style="max-width:420px;">
     <p id="modal-confirm-msg" style="margin:0 0 20px;line-height:1.5;"></p>
@@ -1937,6 +2005,124 @@
         <button style="background:#7c3aed;border:none;color:#fff;padding:5px 13px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="runLinearSync()">&#8635; Sync Now</button>
       </div>
       <div style="color:#555;font-size:11px;">Auto-poll every 60 s · push on change (3 s debounce)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Mail Integrations Modal -->
+<div id="mail-integrations-modal" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+  <div style="background:#11111f;border:1px solid #2a2a4a;border-radius:10px;padding:22px 24px;width:420px;max-height:90vh;overflow-y:auto;position:relative;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h3 style="margin:0;color:#e0e0f0;font-size:16px;">&#9993; Mail Integration</h3>
+      <button style="background:none;border:none;color:#888;cursor:pointer;font-size:20px;line-height:1;padding:2px 6px;" onclick="closeMailModal()">&#10005;</button>
+    </div>
+
+    <!-- Gmail -->
+    <div style="background:#0d0d1a;border-radius:7px;padding:13px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <span style="color:#aaa;font-size:13px;font-weight:600;">Gmail</span>
+        <span id="mail-gmail-status-badge" style="font-size:11px;color:#555;">—</span>
+      </div>
+      <input id="mail-gmail-client-id" type="text" placeholder="Google OAuth2 Client ID" autocomplete="off"
+        style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;box-sizing:border-box;margin-bottom:7px;" />
+      <div style="display:flex;gap:7px;">
+        <button id="btn-connect-gmail" style="background:#16a34a;border:none;color:#fff;padding:6px 13px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="connectMailProvider('gmail')">Connect Gmail</button>
+        <button id="btn-disconnect-gmail" style="display:none;background:#1a1a2e;border:1px solid #dc2626;color:#dc2626;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="disconnectMailProvider('gmail')">Disconnect</button>
+      </div>
+      <div id="mail-gmail-msg" style="color:#555;font-size:11px;margin-top:5px;min-height:14px;"></div>
+    </div>
+
+    <!-- Outlook -->
+    <div style="background:#0d0d1a;border-radius:7px;padding:13px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <span style="color:#aaa;font-size:13px;font-weight:600;">Outlook</span>
+        <span id="mail-outlook-status-badge" style="font-size:11px;color:#555;">—</span>
+      </div>
+      <input id="mail-outlook-client-id" type="text" placeholder="Azure OAuth2 Client ID" autocomplete="off"
+        style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;box-sizing:border-box;margin-bottom:6px;" />
+      <input id="mail-outlook-tenant-id" type="text" placeholder="Tenant ID (or 'common')" autocomplete="off"
+        style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;box-sizing:border-box;margin-bottom:7px;" />
+      <div style="display:flex;gap:7px;">
+        <button id="btn-connect-outlook" style="background:#0078d4;border:none;color:#fff;padding:6px 13px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="connectMailProvider('outlook')">Connect Outlook</button>
+        <button id="btn-disconnect-outlook" style="display:none;background:#1a1a2e;border:1px solid #dc2626;color:#dc2626;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="disconnectMailProvider('outlook')">Disconnect</button>
+      </div>
+      <div id="mail-outlook-msg" style="color:#555;font-size:11px;margin-top:5px;min-height:14px;"></div>
+    </div>
+
+    <!-- IMAP -->
+    <div style="background:#0d0d1a;border-radius:7px;padding:13px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <span style="color:#aaa;font-size:13px;font-weight:600;">IMAP (any provider)</span>
+        <span id="mail-imap-status-badge" style="font-size:11px;color:#555;">—</span>
+      </div>
+      <select id="mail-imap-preset" style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:5px 8px;font-size:12px;margin-bottom:6px;" onchange="applyImapPreset(this.value)">
+        <option value="">— Choose preset —</option>
+        <option value="imap.gmail.com:993">Gmail</option>
+        <option value="outlook.office365.com:993">Outlook / Office 365</option>
+        <option value="imap.mail.yahoo.com:993">Yahoo Mail</option>
+        <option value="imap.fastmail.com:993">Fastmail</option>
+        <option value="imap.mail.me.com:993">iCloud Mail</option>
+        <option value="127.0.0.1:1143">ProtonMail Bridge</option>
+      </select>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:6px;margin-bottom:6px;">
+        <input id="mail-imap-host" type="text" placeholder="IMAP host" autocomplete="off"
+          style="background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;" />
+        <input id="mail-imap-port" type="number" placeholder="993" value="993" min="1" max="65535"
+          style="width:68px;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 8px;font-size:12px;" />
+      </div>
+      <input id="mail-imap-username" type="text" placeholder="Email / username" autocomplete="off"
+        style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;box-sizing:border-box;margin-bottom:6px;" />
+      <input id="mail-imap-password" type="password" placeholder="Password or app password" autocomplete="new-password"
+        style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:6px 9px;font-size:12px;box-sizing:border-box;margin-bottom:7px;" />
+      <div style="display:flex;gap:7px;">
+        <button id="btn-connect-imap" style="background:#7c3aed;border:none;color:#fff;padding:6px 13px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="connectImapProvider()">Connect IMAP</button>
+        <button id="btn-disconnect-imap" style="display:none;background:#1a1a2e;border:1px solid #dc2626;color:#dc2626;padding:6px 12px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="disconnectImapProvider()">Disconnect</button>
+      </div>
+      <div id="mail-imap-msg" style="color:#555;font-size:11px;margin-top:5px;min-height:14px;"></div>
+    </div>
+
+    <!-- Board Link -->
+    <div id="mail-board-section" style="background:#0d0d1a;border-radius:7px;padding:13px;margin-bottom:10px;">
+      <div style="color:#aaa;font-size:13px;font-weight:600;margin-bottom:9px;">Board Settings</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-bottom:8px;">
+        <div>
+          <label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">Provider</label>
+          <select id="mail-board-provider" style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:5px 8px;font-size:12px;">
+            <option value="both">Gmail + Outlook</option>
+            <option value="gmail">Gmail only</option>
+            <option value="outlook">Outlook only</option>
+            <option value="imap">IMAP only</option>
+          </select>
+        </div>
+        <div>
+          <label style="color:#666;font-size:11px;display:block;margin-bottom:3px;">Emails per contact</label>
+          <input id="mail-keep-last" type="number" min="1" max="20" value="2"
+            style="width:100%;background:#1a1a30;border:1px solid #2a2a4a;color:#ddd;border-radius:5px;padding:5px 8px;font-size:12px;box-sizing:border-box;" />
+        </div>
+      </div>
+      <div style="display:flex;gap:7px;align-items:center;">
+        <button id="btn-link-mail" style="background:#b45309;border:none;color:#fff;padding:7px 15px;border-radius:5px;cursor:pointer;font-size:13px;" onclick="linkMailBoard()">Link Board</button>
+        <button id="btn-unlink-mail" style="display:none;background:#1a1a2e;border:1px solid #dc2626;color:#dc2626;padding:7px 14px;border-radius:5px;cursor:pointer;font-size:13px;" onclick="unlinkMailBoard()">Unlink</button>
+      </div>
+      <div id="mail-link-status" style="color:#f87171;font-size:11px;margin-top:6px;min-height:14px;"></div>
+    </div>
+
+    <!-- Sync -->
+    <div id="mail-sync-section" style="display:none;background:#0d0d1a;border-radius:7px;padding:13px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <span style="color:#888;font-size:12px;">Last sync: <span id="mail-last-sync">never</span></span>
+        <button style="background:#b45309;border:none;color:#fff;padding:5px 13px;border-radius:5px;cursor:pointer;font-size:12px;" onclick="runMailSync()">&#8635; Sync Now</button>
+      </div>
+      <div id="mail-sync-result" style="color:#555;font-size:11px;margin-top:4px;min-height:14px;"></div>
+    </div>
+
+    <!-- Setup instructions link -->
+    <div style="margin-top:12px;padding-top:10px;border-top:1px solid #1e1e3a;">
+      <div style="color:#555;font-size:11px;line-height:1.6;">
+        <strong style="color:#666;">Setup:</strong>
+        Gmail — <a href="#" style="color:#60a5fa;" onclick="invoke('open_url_cmd',{url:'https://console.cloud.google.com/apis/credentials'});return false;">Google Cloud Console</a> → OAuth 2.0 Client ID → Desktop app<br>
+        Outlook — <a href="#" style="color:#60a5fa;" onclick="invoke('open_url_cmd',{url:'https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps'});return false;">Azure App Registrations</a> → New registration → Mobile/Desktop app
+      </div>
     </div>
   </div>
 </div>
@@ -3434,6 +3620,7 @@
       renderAssigneePicker(spaceMembers, card.assignee || null);
       renderCoverPicker(card.cover_color || null);
       renderChecklists(card.checklists || [], boardId, cardId);
+      renderCustomFields(card.field_definitions || [], card.custom_fields || {});
       renderActivityFeed(card, boardId, cardId);
       renderParentRef(card);
       renderSubtasks(card);
@@ -3556,6 +3743,271 @@
     document.getElementById('direct-priority-section').style.display = '';
     document.getElementById('computed-priority-section').style.display = '';
     refreshComputedPriority(null);
+  }
+
+  // ── Custom Fields ────────────────────────────────────────────────────────────
+
+  let _cfDebounce = {};
+
+  function renderCustomFields(fieldDefs, fieldValues) {
+    const container = document.getElementById('card-detail-custom-fields');
+    container.innerHTML = '';
+    const active = (fieldDefs || []).filter(function(f) { return !f.archived; });
+    if (active.length === 0) {
+      container.innerHTML = '<div style="color:#444;font-size:12px;padding:2px 0;">No fields. Click &#9881; Manage to add one.</div>';
+      return;
+    }
+    for (const field of active) {
+      const val = (fieldValues && fieldValues[field.id]) || '';
+      const wrap = document.createElement('div');
+      wrap.className = 'cf-field-wrap';
+      const lbl = document.createElement('div');
+      lbl.className = 'cf-field-label';
+      lbl.textContent = field.name;
+      wrap.appendChild(lbl);
+      const row = document.createElement('div');
+      row.className = 'cf-input-row';
+
+      if (field.field_type === 'multi_select') {
+        const chipsWrap = document.createElement('div');
+        chipsWrap.className = 'cf-checkbox-wrap';
+        chipsWrap.dataset.fieldId = field.id;
+        const selected = val ? val.split(',').map(function(s) { return s.trim(); }).filter(Boolean) : [];
+        (field.options || []).forEach(function(opt) {
+          const chip = document.createElement('span');
+          chip.className = 'cf-chip' + (selected.indexOf(opt) !== -1 ? ' active' : '');
+          chip.textContent = opt;
+          chip.dataset.opt = opt;
+          chip.addEventListener('click', function() {
+            chip.classList.toggle('active');
+            const nowSelected = [].slice.call(chipsWrap.querySelectorAll('.cf-chip.active')).map(function(c) { return c.dataset.opt; });
+            onCfChange(field.id, nowSelected.join(','));
+          });
+          chipsWrap.appendChild(chip);
+        });
+        const clearBtn = document.createElement('button');
+        clearBtn.className = 'cf-clear-btn';
+        clearBtn.title = 'Clear';
+        clearBtn.textContent = '\xd7';
+        clearBtn.addEventListener('click', function() { onCfClear(field.id); });
+        row.appendChild(chipsWrap);
+        row.appendChild(clearBtn);
+        wrap.appendChild(row);
+        container.appendChild(wrap);
+        continue;
+      }
+
+      let input;
+      if (field.field_type === 'checkbox') {
+        input = document.createElement('input');
+        input.type = 'checkbox';
+        input.checked = val === 'true';
+        input.style.cssText = 'width:18px;height:18px;accent-color:#c8962a;cursor:pointer;margin:0;';
+        input.addEventListener('change', function() { onCfChange(field.id, input.checked ? 'true' : 'false'); });
+      } else if (field.field_type === 'select') {
+        input = document.createElement('select');
+        input.className = 'cf-input';
+        const emptyOpt = document.createElement('option');
+        emptyOpt.value = '';
+        emptyOpt.textContent = '— unset —';
+        input.appendChild(emptyOpt);
+        (field.options || []).forEach(function(opt) {
+          const o = document.createElement('option');
+          o.value = opt; o.textContent = opt;
+          input.appendChild(o);
+        });
+        input.value = val;
+        input.addEventListener('change', function() { onCfChange(field.id, input.value); });
+      } else {
+        input = document.createElement('input');
+        input.className = 'cf-input';
+        input.type = field.field_type === 'number' ? 'number' : field.field_type === 'date' ? 'date' : 'text';
+        input.value = val;
+        input.addEventListener('input', function() { onCfChange(field.id, input.value); });
+      }
+
+      const clearBtn = document.createElement('button');
+      clearBtn.className = 'cf-clear-btn';
+      clearBtn.title = 'Clear';
+      clearBtn.textContent = '\xd7';
+      (function(fid) {
+        clearBtn.addEventListener('click', function() { onCfClear(fid); });
+      })(field.id);
+
+      row.appendChild(input);
+      row.appendChild(clearBtn);
+      wrap.appendChild(row);
+      container.appendChild(wrap);
+    }
+  }
+
+  function onCfChange(fieldId, value) {
+    clearTimeout(_cfDebounce[fieldId]);
+    _cfDebounce[fieldId] = setTimeout(async function() {
+      if (!_cardDetailCtx) return;
+      const boardId = _cardDetailCtx.boardId;
+      const cardId = _cardDetailCtx.cardId;
+      if (!value || value === '') {
+        try { await invoke('clear_card_field_cmd', { boardId: boardId, cardId: cardId, fieldId: fieldId }); }
+        catch (e) { showToast('Error clearing field: ' + e, 3000); }
+        return;
+      }
+      try { await invoke('set_card_field_cmd', { boardId: boardId, cardId: cardId, fieldId: fieldId, value: value }); }
+      catch (e) { showToast('Error saving field: ' + e, 3000); }
+    }, 400);
+  }
+
+  async function onCfClear(fieldId) {
+    if (!_cardDetailCtx) return;
+    const boardId = _cardDetailCtx.boardId;
+    const cardId = _cardDetailCtx.cardId;
+    try { await invoke('clear_card_field_cmd', { boardId: boardId, cardId: cardId, fieldId: fieldId }); }
+    catch (e) { showToast('Error clearing field: ' + e, 3000); return; }
+    refreshCardCustomFields();
+  }
+
+  async function refreshCardCustomFields() {
+    if (!_cardDetailCtx) return;
+    const boardId = _cardDetailCtx.boardId;
+    const cardId = _cardDetailCtx.cardId;
+    try {
+      const card = await invoke('get_card_cmd', { boardId: boardId, cardId: cardId });
+      renderCustomFields(card.field_definitions || [], card.custom_fields || {});
+    } catch (e) { console.error('refreshCardCustomFields', e); }
+  }
+
+  // ── Manage Fields Modal ──────────────────────────────────────────────────────
+
+  async function openManageFields() {
+    if (!_cardDetailCtx) return;
+    const boardId = _cardDetailCtx.boardId;
+    try {
+      const fields = await invoke('list_board_fields_cmd', { boardId: boardId });
+      renderManageFieldsList(fields, boardId);
+      document.getElementById('modal-manage-fields').classList.add('visible');
+    } catch (e) { showToast('Error loading fields: ' + e, 3000); }
+  }
+
+  function closeManageFields() {
+    document.getElementById('modal-manage-fields').classList.remove('visible');
+    refreshCardCustomFields();
+  }
+
+  function onMfTypeChange() {
+    const type = document.getElementById('mf-new-type').value;
+    const show = type === 'select' || type === 'multi_select';
+    document.getElementById('mf-options-row').style.display = show ? '' : 'none';
+  }
+
+  function renderManageFieldsList(fields, boardId) {
+    const list = document.getElementById('manage-fields-list');
+    list.innerHTML = '';
+    const active = (fields || []).filter(function(f) { return !f.archived; });
+    if (active.length === 0) {
+      list.innerHTML = '<div style="color:#444;font-size:12px;padding:8px 0;">No fields yet.</div>';
+      return;
+    }
+    active.forEach(function(f) {
+      const row = document.createElement('div');
+      row.className = 'mf-field-row';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'mf-field-name';
+      nameSpan.textContent = f.name;
+
+      const typePill = document.createElement('span');
+      typePill.className = 'mf-type-pill';
+      typePill.textContent = f.field_type.replace('_', ' ');
+
+      const renameBtn = document.createElement('button');
+      renameBtn.className = 'mf-btn';
+      renameBtn.textContent = 'Rename';
+      renameBtn.onclick = function() { mfStartRename(row, nameSpan, f.id, f.name, boardId); };
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'mf-btn danger';
+      deleteBtn.textContent = 'Archive';
+      deleteBtn.onclick = function() { mfDeleteField(f.id, f.name, boardId); };
+
+      row.appendChild(nameSpan);
+      row.appendChild(typePill);
+      row.appendChild(renameBtn);
+      row.appendChild(deleteBtn);
+      list.appendChild(row);
+    });
+  }
+
+  function mfStartRename(row, nameSpan, fieldId, currentName, boardId) {
+    const input = document.createElement('input');
+    input.value = currentName;
+    input.style.cssText = 'flex:1;min-width:0;background:#0d0d1a;border:1px solid #2e2e5a;color:#ccc;padding:3px 8px;border-radius:4px;font-size:12px;outline:none;';
+    nameSpan.replaceWith(input);
+    input.focus();
+    input.select();
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'mf-btn';
+    saveBtn.textContent = 'Save';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'mf-btn';
+    cancelBtn.textContent = 'Cancel';
+    const oldRenameBtn = row.querySelector('.mf-btn');
+    row.insertBefore(saveBtn, oldRenameBtn);
+    row.insertBefore(cancelBtn, oldRenameBtn);
+    oldRenameBtn.style.display = 'none';
+    saveBtn.onclick = async function() {
+      const newName = input.value.trim();
+      if (!newName || newName === currentName) { cancelBtn.click(); return; }
+      try {
+        await invoke('rename_field_cmd', { boardId: boardId, fieldId: fieldId, newName: newName });
+        const fields = await invoke('list_board_fields_cmd', { boardId: boardId });
+        renderManageFieldsList(fields, boardId);
+        refreshCardCustomFields();
+      } catch (e) { showToast('Rename failed: ' + e, 3000); }
+    };
+    cancelBtn.onclick = function() {
+      input.replaceWith(nameSpan);
+      saveBtn.remove();
+      cancelBtn.remove();
+      oldRenameBtn.style.display = '';
+    };
+    input.onkeydown = function(e) {
+      if (e.key === 'Enter') saveBtn.click();
+      if (e.key === 'Escape') cancelBtn.click();
+    };
+  }
+
+  async function mfDeleteField(fieldId, name, boardId) {
+    showConfirm('Archive field "' + name + '"? The field will be hidden from all cards. Existing values are preserved in the data.', async function() {
+      try {
+        await invoke('delete_field_cmd', { boardId: boardId, fieldId: fieldId });
+        const fields = await invoke('list_board_fields_cmd', { boardId: boardId });
+        renderManageFieldsList(fields, boardId);
+        refreshCardCustomFields();
+      } catch (e) { showToast('Delete failed: ' + e, 3000); }
+    });
+  }
+
+  async function mfAddField() {
+    if (!_cardDetailCtx) return;
+    const boardId = _cardDetailCtx.boardId;
+    const name = document.getElementById('mf-new-name').value.trim();
+    if (!name) { showToast('Field name is required', 2000); return; }
+    const fieldType = document.getElementById('mf-new-type').value;
+    const optRaw = document.getElementById('mf-new-options').value.trim();
+    const options = (fieldType === 'select' || fieldType === 'multi_select')
+      ? optRaw.split(',').map(function(s) { return s.trim(); }).filter(Boolean)
+      : [];
+    try {
+      await invoke('create_field_cmd', { boardId: boardId, name: name, fieldType: fieldType, options: options, defaultValue: null, autoApply: false });
+      document.getElementById('mf-new-name').value = '';
+      document.getElementById('mf-new-options').value = '';
+      document.getElementById('mf-options-row').style.display = 'none';
+      document.getElementById('mf-new-type').value = 'text';
+      const fields = await invoke('list_board_fields_cmd', { boardId: boardId });
+      renderManageFieldsList(fields, boardId);
+      refreshCardCustomFields();
+      showToast('Field created');
+    } catch (e) { showToast('Create failed: ' + e, 3000); }
   }
 
   function renderSubtasks(card) {
@@ -6561,6 +7013,195 @@
     if (!linearLinked) return;
     if (linearDebounceTimer) clearTimeout(linearDebounceTimer);
     linearDebounceTimer = setTimeout(runLinearSync, 3000);
+  }
+
+  // ── Mail Integration ─────────────────────────────────────────────────────────
+
+  let _mailBoardId = null;
+  let _mailLinked = false;
+
+  function openMailModal() {
+    const m = document.getElementById('mail-integrations-modal');
+    m.style.display = 'flex';
+    _mailBoardId = _currentBoardId;
+    refreshMailUI();
+  }
+
+  function closeMailModal() {
+    document.getElementById('mail-integrations-modal').style.display = 'none';
+  }
+
+  async function refreshMailUI() {
+    try {
+      const status = await invoke('get_mail_token_status_cmd');
+      const gmailBadge = document.getElementById('mail-gmail-status-badge');
+      const outlookBadge = document.getElementById('mail-outlook-status-badge');
+      const connectGmail = document.getElementById('btn-connect-gmail');
+      const disconnectGmail = document.getElementById('btn-disconnect-gmail');
+      const connectOutlook = document.getElementById('btn-connect-outlook');
+      const disconnectOutlook = document.getElementById('btn-disconnect-outlook');
+
+      if (status.gmail) {
+        gmailBadge.textContent = '✓ connected'; gmailBadge.style.color = '#4ade80';
+        connectGmail.style.display = 'none'; disconnectGmail.style.display = '';
+      } else {
+        gmailBadge.textContent = 'not connected'; gmailBadge.style.color = '#555';
+        connectGmail.style.display = ''; disconnectGmail.style.display = 'none';
+      }
+      if (status.outlook) {
+        outlookBadge.textContent = '✓ connected'; outlookBadge.style.color = '#4ade80';
+        connectOutlook.style.display = 'none'; disconnectOutlook.style.display = '';
+      } else {
+        outlookBadge.textContent = 'not connected'; outlookBadge.style.color = '#555';
+        connectOutlook.style.display = ''; disconnectOutlook.style.display = 'none';
+      }
+
+      const imapSt = await invoke('get_imap_status_cmd');
+      const imapBadge = document.getElementById('mail-imap-status-badge');
+      const connectImap = document.getElementById('btn-connect-imap');
+      const disconnectImap = document.getElementById('btn-disconnect-imap');
+      if (imapSt.configured) {
+        imapBadge.textContent = imapSt.connected ? '✓ connected' : '⚠ saved (not tested)';
+        imapBadge.style.color = imapSt.connected ? '#4ade80' : '#f59e0b';
+        connectImap.style.display = 'none'; disconnectImap.style.display = '';
+        document.getElementById('mail-imap-host').value = imapSt.host || '';
+        document.getElementById('mail-imap-port').value = imapSt.port || 993;
+        document.getElementById('mail-imap-username').value = imapSt.username || '';
+      } else {
+        imapBadge.textContent = 'not connected'; imapBadge.style.color = '#555';
+        connectImap.style.display = ''; disconnectImap.style.display = 'none';
+      }
+
+      if (_mailBoardId) {
+        const boardStatus = await invoke('get_mail_board_status_cmd', { boardId: _mailBoardId });
+        _mailLinked = boardStatus.linked;
+        document.getElementById('btn-unlink-mail').style.display = _mailLinked ? '' : 'none';
+        document.getElementById('btn-link-mail').style.display = _mailLinked ? 'none' : '';
+        const syncSec = document.getElementById('mail-sync-section');
+        syncSec.style.display = _mailLinked ? '' : 'none';
+        if (_mailLinked) {
+          document.getElementById('mail-board-provider').value = boardStatus.provider || 'both';
+          document.getElementById('mail-keep-last').value = boardStatus.keep_last || 2;
+          document.getElementById('mail-last-sync').textContent = boardStatus.last_sync ? new Date(boardStatus.last_sync).toLocaleString() : 'never';
+        }
+      }
+    } catch (e) {
+      console.error('refreshMailUI', e);
+    }
+  }
+
+  async function connectMailProvider(provider) {
+    const msgEl = document.getElementById(`mail-${provider}-msg`);
+    msgEl.textContent = 'Opening browser…';
+    msgEl.style.color = '#888';
+    const clientId = document.getElementById(`mail-${provider}-client-id`).value.trim();
+    if (!clientId) { msgEl.textContent = 'Enter a Client ID first.'; msgEl.style.color = '#f87171'; return; }
+    const tenantId = provider === 'outlook' ? (document.getElementById('mail-outlook-tenant-id').value.trim() || 'common') : null;
+    try {
+      const authUrl = await invoke('start_mail_oauth_cmd', { provider, clientId, tenantId });
+      await invoke('open_url_cmd', { url: authUrl });
+      msgEl.textContent = 'Authorize in your browser — waiting…';
+      const { listen } = window.__TAURI__.event;
+      const unlisten = await listen('mail-oauth-complete', async (ev) => {
+        unlisten();
+        if (ev.payload.success) {
+          msgEl.textContent = '✓ Connected!'; msgEl.style.color = '#4ade80';
+          await refreshMailUI();
+        } else {
+          msgEl.textContent = `Error: ${ev.payload.error}`; msgEl.style.color = '#f87171';
+        }
+      });
+    } catch(e) {
+      msgEl.textContent = `Error: ${e}`; msgEl.style.color = '#f87171';
+    }
+  }
+
+  async function disconnectMailProvider(provider) {
+    await invoke('disconnect_mail_provider_cmd', { provider });
+    await refreshMailUI();
+  }
+
+  async function linkMailBoard() {
+    const msgEl = document.getElementById('mail-link-status');
+    const provider = document.getElementById('mail-board-provider').value;
+    const keepLast = parseInt(document.getElementById('mail-keep-last').value) || 2;
+    const gmailClientId = document.getElementById('mail-gmail-client-id').value.trim() || null;
+    const outlookClientId = document.getElementById('mail-outlook-client-id').value.trim() || null;
+    const outlookTenantId = document.getElementById('mail-outlook-tenant-id').value.trim() || null;
+    try {
+      await invoke('link_mail_board_cmd', {
+        boardId: _mailBoardId, provider, gmailClientId, outlookClientId, outlookTenantId,
+        inboxColId: null, keepLast,
+      });
+      msgEl.textContent = '✓ Board linked'; msgEl.style.color = '#4ade80';
+      await refreshMailUI();
+    } catch(e) {
+      msgEl.textContent = `Error: ${e}`; msgEl.style.color = '#f87171';
+    }
+  }
+
+  async function unlinkMailBoard() {
+    await invoke('unlink_mail_board_cmd', { boardId: _mailBoardId });
+    await refreshMailUI();
+  }
+
+  async function runMailSync() {
+    const resultEl = document.getElementById('mail-sync-result');
+    resultEl.textContent = 'Syncing…'; resultEl.style.color = '#888';
+    try {
+      const r = await invoke('sync_mail_board_cmd', { boardId: _mailBoardId });
+      resultEl.textContent = `${r.contacts_created} new · ${r.contacts_updated} updated · ${r.emails_added} emails`;
+      resultEl.style.color = '#4ade80';
+      document.getElementById('mail-last-sync').textContent = new Date().toLocaleString();
+      refreshBoardView();
+    } catch(e) {
+      resultEl.textContent = `Error: ${e}`; resultEl.style.color = '#f87171';
+    }
+  }
+
+  function applyImapPreset(val) {
+    if (!val) return;
+    const [host, port] = val.split(':');
+    document.getElementById('mail-imap-host').value = host;
+    document.getElementById('mail-imap-port').value = port;
+  }
+
+  async function connectImapProvider() {
+    const msgEl = document.getElementById('mail-imap-msg');
+    msgEl.textContent = 'Testing connection…'; msgEl.style.color = '#888';
+    const host = document.getElementById('mail-imap-host').value.trim();
+    const port = parseInt(document.getElementById('mail-imap-port').value) || 993;
+    const username = document.getElementById('mail-imap-username').value.trim();
+    const password = document.getElementById('mail-imap-password').value;
+    if (!host || !username || !password) {
+      msgEl.textContent = 'Host, username, and password are required.'; msgEl.style.color = '#f87171'; return;
+    }
+    try {
+      await invoke('save_imap_credentials_cmd', { host, port, username, password, folder: 'INBOX' });
+      const st = await invoke('get_imap_status_cmd');
+      if (st.connected) {
+        msgEl.textContent = '✓ Connected!'; msgEl.style.color = '#4ade80';
+        document.getElementById('mail-imap-status-badge').textContent = '✓ connected';
+        document.getElementById('mail-imap-status-badge').style.color = '#4ade80';
+        document.getElementById('btn-connect-imap').style.display = 'none';
+        document.getElementById('btn-disconnect-imap').style.display = '';
+        document.getElementById('mail-imap-password').value = '';
+      } else {
+        msgEl.textContent = 'Credentials saved but connection test failed — check host/password.'; msgEl.style.color = '#f59e0b';
+      }
+    } catch(e) {
+      msgEl.textContent = `Error: ${e}`; msgEl.style.color = '#f87171';
+    }
+  }
+
+  async function disconnectImapProvider() {
+    await invoke('delete_imap_credentials_cmd');
+    document.getElementById('mail-imap-status-badge').textContent = '—';
+    document.getElementById('mail-imap-status-badge').style.color = '#555';
+    document.getElementById('btn-connect-imap').style.display = '';
+    document.getElementById('btn-disconnect-imap').style.display = 'none';
+    document.getElementById('mail-imap-msg').textContent = 'IMAP disconnected.';
+    document.getElementById('mail-imap-msg').style.color = '#888';
   }
 </script>
 

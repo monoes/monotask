@@ -179,7 +179,9 @@ pub fn get_field_by_id(doc: &AutoCommit, field_id: &str) -> Result<Option<FieldD
 /// Returns Err if ambiguous.
 pub fn resolve_field_ref(doc: &AutoCommit, field_ref: &str) -> Result<Option<FieldDefinition>> {
     if let Some(def) = get_field_by_id(doc, field_ref)? {
-        return Ok(Some(def));
+        if !def.archived {
+            return Ok(Some(def));
+        }
     }
     let lower = field_ref.to_lowercase();
     let matches: Vec<_> = list_fields(doc)?
@@ -433,7 +435,8 @@ pub fn validate_field_value(field: &FieldDefinition, value: &str) -> std::result
         }
         FieldType::MultiSelect => {
             if !field.options.is_empty() {
-                for part in value.split('\x1f') {
+                for part in value.split(',').map(|s| s.trim()) {
+                    if part.is_empty() { continue; }
                     if !field.options.iter().any(|o| o == part) {
                         return Err(format!(
                             "field '{}': '{}' is not a valid option. valid options: {}",

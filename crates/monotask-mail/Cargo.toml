@@ -1,0 +1,21 @@
+[package]
+name = "monotask-mail"
+version = "1.2.0"
+edition = "2021"
+
+[dependencies]
+monotask-core = { path = "../monotask-core" }
+reqwest        = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+anyhow         = { workspace = true }
+tokio          = { workspace = true }
+chrono         = { workspace = true }
+automerge      = { workspace = true }
+base64         = { workspace = true }
+sha2           = { workspace = true }
+uuid           = { workspace = true }
+hex            = { workspace = true }
+imap           = { version = "2", features = ["native-tls"] }
+imap-proto     = "0.10"
+native-tls     = "0.2"

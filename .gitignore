@@ -12,3 +12,5 @@ replicate/
 .DS_Store
 docs/improvements-plan*.md
 docs/superpowers/
+node_modules/
+package-lock.json

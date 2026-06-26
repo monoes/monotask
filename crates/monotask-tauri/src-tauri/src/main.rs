@@ -377,6 +377,17 @@ struct SubtaskRef {
 }
 
 #[derive(serde::Serialize)]
+struct FieldDefinitionView {
+    id: String,
+    name: String,
+    field_type: String,
+    options: Vec<String>,
+    default_value: Option<String>,
+    auto_apply: bool,
+    archived: bool,
+}
+
+#[derive(serde::Serialize)]
 struct CardDetailView {
     id: String,
     title: String,
@@ -404,6 +415,8 @@ struct CardDetailView {
     linear_issue_id: Option<String>,
     linear_issue_identifier: Option<String>,
     linear_synced_at: Option<String>,
+    custom_fields: std::collections::HashMap<String, String>,
+    field_definitions: Vec<FieldDefinitionView>,
 }
 
 #[derive(serde::Serialize)]
@@ -423,6 +436,7 @@ struct BoardDetail {
 const DEFAULT_COLUMNS: &[&str] = &["Todo", "In Progress", "Review", "Done"];
 const TASK_BOARD_COLUMNS: &[&str] = &["Backlog", "Todo", "In Progress", "Human-in-Loop", "Done"];
 const IDEA_BOARD_COLUMNS: &[&str] = &["New", "Evaluated", "Elaborated", "Tasked", "Iced", "Rejected"];
+const CRM_EMAIL_COLUMNS: &[&str] = &["New Contact", "In Progress", "Follow Up", "Closed"];
 
 #[tauri::command]
 fn create_board_cmd(title: String, template: Option<String>, state: tauri::State<AppState>) -> Result<BoardSummary, String> {
@@ -432,6 +446,7 @@ fn create_board_cmd(title: String, template: Option<String>, state: tauri::State
         .map_err(|e| e.to_string())?;
     let columns: &[&str] = match template.as_deref() {
         Some("idea") => IDEA_BOARD_COLUMNS,
+        Some("crm-email") => CRM_EMAIL_COLUMNS,
         Some("empty") => &[],
         _ => TASK_BOARD_COLUMNS,
     };
@@ -441,6 +456,24 @@ fn create_board_cmd(title: String, template: Option<String>, state: tauri::State
     for col_title in columns {
         monotask_core::column::create_column(&mut doc, col_title)
             .map_err(|e| e.to_string())?;
+    }
+    if template.as_deref() == Some("crm-email") {
+        // Pre-create the 5 CRM custom fields so they're ready for email sync
+        use monotask_core::field::{FieldType, create_field};
+        let defs: &[(&str, FieldType, Vec<&str>)] = &[
+            ("Email",       FieldType::Text,   vec![]),
+            ("Last Seen",   FieldType::Date,   vec![]),
+            ("Email Count", FieldType::Number, vec![]),
+            ("Provider",    FieldType::Select, vec!["gmail", "outlook"]),
+            ("Labels",      FieldType::Text,   vec![]),
+        ];
+        let keys = ["mail_field_email","mail_field_last_seen","mail_field_email_count","mail_field_provider","mail_field_labels"];
+        for ((name, ftype, opts), key) in defs.iter().zip(keys.iter()) {
+            let options: Vec<String> = opts.iter().map(|s| s.to_string()).collect();
+            let field = create_field(&mut doc, name, ftype.clone(), options, None, false)
+                .map_err(|e| e.to_string())?;
+            doc.put(automerge::ROOT, *key, field.id.as_str()).map_err(|e| e.to_string())?;
+        }
     }
     monotask_storage::board::save_board(storage.conn(), &board.id, &mut doc)
         .map_err(|e| e.to_string())?;
@@ -1109,6 +1142,7 @@ fn create_card_cmd(board_id: String, col_id: String, title: String, state: tauri
     let pk = state.identity.public_key_bytes();
     let card = monotask_core::card::create_card(&mut doc, &col_id, &title, &pk, &[pk.to_vec()])
         .map_err(|e| e.to_string())?;
+    let _ = monotask_core::field::apply_default_fields(&mut doc, &card.id);
     monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
         .map_err(|e| e.to_string())?;
     // Update card search index
@@ -1236,6 +1270,20 @@ fn get_card_cmd(board_id: String, card_id: String, state: tauri::State<AppState>
     let linear_issue_id = monotask_linear::get_linear_issue_id(&doc, &card_id);
     let linear_issue_identifier = monotask_linear::get_linear_issue_identifier(&doc, &card_id);
     let linear_synced_at = monotask_linear::get_linear_synced_at(&doc, &card_id);
+    let custom_fields = card.custom_fields;
+    let field_definitions = monotask_core::field::list_fields(&doc)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|f| FieldDefinitionView {
+            id: f.id,
+            name: f.name,
+            field_type: f.field_type.as_str().to_string(),
+            options: f.options,
+            default_value: f.default_value,
+            auto_apply: f.auto_apply,
+            archived: f.archived,
+        })
+        .collect();
     Ok(CardDetailView {
         id: card.id,
         title: card.title,
@@ -1263,6 +1311,8 @@ fn get_card_cmd(board_id: String, card_id: String, state: tauri::State<AppState>
         linear_issue_id,
         linear_issue_identifier,
         linear_synced_at,
+        custom_fields,
+        field_definitions,
     })
 }
 
@@ -3012,9 +3062,172 @@ fn main() {
             sync_linear_board_cmd,
             sync_linear_card_cmd,
             open_url_cmd,
+            get_mail_token_status_cmd,
+            start_mail_oauth_cmd,
+            disconnect_mail_provider_cmd,
+            get_mail_board_status_cmd,
+            link_mail_board_cmd,
+            unlink_mail_board_cmd,
+            sync_mail_board_cmd,
+            save_imap_credentials_cmd,
+            get_imap_status_cmd,
+            delete_imap_credentials_cmd,
+            list_board_fields_cmd,
+            create_field_cmd,
+            set_card_field_cmd,
+            clear_card_field_cmd,
+            rename_field_cmd,
+            delete_field_cmd,
+            update_field_default_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ── Custom Fields ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_board_fields_cmd(board_id: String, state: tauri::State<AppState>) -> Result<Vec<FieldDefinitionView>, String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    let fields = monotask_core::field::list_fields(&doc).map_err(|e| e.to_string())?;
+    Ok(fields.into_iter().map(|f| FieldDefinitionView {
+        id: f.id,
+        name: f.name,
+        field_type: f.field_type.as_str().to_string(),
+        options: f.options,
+        default_value: f.default_value,
+        auto_apply: f.auto_apply,
+        archived: f.archived,
+    }).collect())
+}
+
+#[tauri::command]
+fn create_field_cmd(
+    board_id: String,
+    name: String,
+    field_type: String,
+    options: Vec<String>,
+    default_value: Option<String>,
+    auto_apply: bool,
+    state: tauri::State<AppState>,
+) -> Result<FieldDefinitionView, String> {
+    validate_text(&name, "Field name", 100)?;
+    let ft = monotask_core::field::FieldType::from_str(&field_type)
+        .ok_or_else(|| format!("unknown field type: {}", field_type))?;
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    let field = monotask_core::field::create_field(&mut doc, &name, ft, options, default_value, auto_apply)
+        .map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(FieldDefinitionView {
+        id: field.id,
+        name: field.name,
+        field_type: field.field_type.as_str().to_string(),
+        options: field.options,
+        default_value: field.default_value,
+        auto_apply: field.auto_apply,
+        archived: field.archived,
+    })
+}
+
+#[tauri::command]
+fn set_card_field_cmd(
+    board_id: String,
+    card_id: String,
+    field_id: String,
+    value: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    let field_def = monotask_core::field::get_field_by_id(&doc, &field_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("field not found: {}", field_id))?;
+    monotask_core::field::validate_field_value(&field_def, &value)
+        .map_err(|e| e)?;
+    monotask_core::field::set_card_field(&mut doc, &card_id, &field_id, &value)
+        .map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_card_field_cmd(
+    board_id: String,
+    card_id: String,
+    field_id: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::field::clear_card_field(&mut doc, &card_id, &field_id)
+        .map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_field_cmd(
+    board_id: String,
+    field_id: String,
+    new_name: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    validate_text(&new_name, "Field name", 100)?;
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::field::rename_field(&mut doc, &field_id, &new_name)
+        .map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_field_cmd(
+    board_id: String,
+    field_id: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::field::archive_field(&mut doc, &field_id)
+        .map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn update_field_default_cmd(
+    board_id: String,
+    field_id: String,
+    default_value: Option<String>,
+    auto_apply: Option<bool>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::field::update_field_default(
+        &mut doc,
+        &field_id,
+        default_value.as_deref(),
+        auto_apply,
+    ).map_err(|e| e.to_string())?;
+    storage.save_board(&board_id, &mut doc).map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
 }
 
 #[tauri::command]
@@ -3760,4 +3973,194 @@ async fn install_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ── Mail (Gmail / Outlook) Integration ───────────────────────────────────────
+
+#[tauri::command]
+fn get_mail_token_status_cmd(state: tauri::State<AppState>) -> serde_json::Value {
+    serde_json::json!({
+        "gmail": monotask_mail::token_saved(&state.data_dir, "gmail"),
+        "outlook": monotask_mail::token_saved(&state.data_dir, "outlook"),
+    })
+}
+
+#[tauri::command]
+async fn start_mail_oauth_cmd(
+    provider: String,
+    client_id: String,
+    tenant_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let data_dir = state.data_dir.clone();
+    let tenant = tenant_id.clone().unwrap_or_else(|| "common".into());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await.map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+
+    let (verifier, challenge) = monotask_mail::generate_pkce();
+    let auth_url = monotask_mail::build_auth_url(&provider, &client_id, &tenant, &challenge, &redirect_uri)
+        .map_err(|e| e.to_string())?;
+
+    let prov = provider.clone();
+    let cid = client_id.clone();
+    let ten = tenant.clone();
+    let redir = redirect_uri.clone();
+    tokio::spawn(async move {
+        let result = monotask_mail::wait_and_complete_oauth(
+            listener, &data_dir, &prov, &cid, &ten, &verifier, &redir,
+        ).await;
+        match result {
+            Ok(()) => { let _ = app_handle.emit("mail-oauth-complete", serde_json::json!({"provider": prov, "success": true})); }
+            Err(e) => { let _ = app_handle.emit("mail-oauth-complete", serde_json::json!({"provider": prov, "success": false, "error": e.to_string()})); }
+        }
+    });
+
+    Ok(auth_url)
+}
+
+#[tauri::command]
+fn disconnect_mail_provider_cmd(provider: String, state: tauri::State<AppState>) -> Result<(), String> {
+    monotask_mail::delete_token(&state.data_dir, &provider).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_mail_board_status_cmd(board_id: String, state: tauri::State<AppState>) -> Result<serde_json::Value, String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    match monotask_mail::get_mail_config(&doc) {
+        Some(c) => Ok(serde_json::json!({
+            "linked": true,
+            "provider": c.provider,
+            "inbox_col_id": c.inbox_col_id,
+            "keep_last": c.keep_last,
+            "last_sync": c.last_sync,
+        })),
+        None => Ok(serde_json::json!({ "linked": false })),
+    }
+}
+
+#[tauri::command]
+fn link_mail_board_cmd(
+    board_id: String,
+    provider: String,
+    gmail_client_id: Option<String>,
+    outlook_client_id: Option<String>,
+    outlook_tenant_id: Option<String>,
+    inbox_col_id: Option<String>,
+    keep_last: Option<u64>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    let existing = monotask_mail::get_mail_config(&doc);
+    let config = monotask_mail::MailConfig {
+        provider,
+        gmail_client_id: gmail_client_id.or_else(|| existing.as_ref().and_then(|c| c.gmail_client_id.clone())),
+        outlook_client_id: outlook_client_id.or_else(|| existing.as_ref().and_then(|c| c.outlook_client_id.clone())),
+        outlook_tenant_id: outlook_tenant_id.or_else(|| existing.as_ref().map(|c| c.outlook_tenant_id.clone())).unwrap_or_else(|| "common".into()),
+        inbox_col_id: inbox_col_id.or_else(|| existing.as_ref().and_then(|c| c.inbox_col_id.clone())),
+        keep_last: keep_last.or_else(|| existing.as_ref().map(|c| c.keep_last)).unwrap_or(2),
+        last_sync: existing.and_then(|c| c.last_sync),
+    };
+    monotask_mail::set_mail_config(&mut doc, Some(&config)).map_err(|e| e.to_string())?;
+    monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn unlink_mail_board_cmd(board_id: String, state: tauri::State<AppState>) -> Result<(), String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_mail::set_mail_config(&mut doc, None).map_err(|e| e.to_string())?;
+    monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn sync_mail_board_cmd(
+    board_id: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let data_dir = state.data_dir.clone();
+    let actor_pk = state.identity.public_key_bytes().to_vec();
+
+    let mut doc = {
+        let storage = state.storage.lock().map_err(|e| e.to_string())?;
+        monotask_storage::board::load_board(storage.conn(), &board_id)
+            .map_err(|e| e.to_string())?
+    };
+
+    let config = monotask_mail::get_mail_config(&doc)
+        .ok_or_else(|| "Board not linked to email. Use the Mail integration settings.".to_string())?;
+
+    let result = monotask_mail::sync_board(&mut doc, &data_dir, &config, &actor_pk)
+        .await.map_err(|e| e.to_string())?;
+
+    {
+        let storage = state.storage.lock().map_err(|e| e.to_string())?;
+        let mut fresh = monotask_storage::board::load_board(storage.conn(), &board_id)
+            .map_err(|e| e.to_string())?;
+        fresh.merge(&mut doc).map_err(|e| e.to_string())?;
+        monotask_storage::board::save_board(storage.conn(), &board_id, &mut fresh)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(serde_json::to_value(result).unwrap_or_default())
+}
+
+#[tauri::command]
+fn save_imap_credentials_cmd(
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    folder: Option<String>,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let creds = monotask_mail::ImapCredentials {
+        host,
+        port,
+        username,
+        password,
+        folder: folder.unwrap_or_else(|| "INBOX".into()),
+    };
+    monotask_mail::save_imap_credentials(&state.data_dir, &creds).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_imap_status_cmd(
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let data_dir = state.data_dir.clone();
+    match monotask_mail::load_imap_credentials(&data_dir).map_err(|e| e.to_string())? {
+        None => Ok(serde_json::json!({ "configured": false })),
+        Some(creds) => {
+            let test_creds = creds.clone();
+            let ok = tokio::task::spawn_blocking(move || {
+                monotask_mail::imap_client::fetch_since_sync_test(&test_creds).is_ok()
+            }).await.unwrap_or(false);
+            Ok(serde_json::json!({
+                "configured": true,
+                "host": creds.host,
+                "port": creds.port,
+                "username": creds.username,
+                "folder": creds.folder,
+                "connected": ok,
+            }))
+        }
+    }
+}
+
+#[tauri::command]
+fn delete_imap_credentials_cmd(state: tauri::State<AppState>) -> Result<(), String> {
+    monotask_mail::delete_imap_credentials(&state.data_dir).map_err(|e| e.to_string())
 }

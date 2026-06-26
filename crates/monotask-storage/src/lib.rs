@@ -28,7 +28,7 @@ fn extract_custom_fields(
     use automerge::ReadDoc;
     use monotask_core::field::FieldType;
 
-    // Build field_id → FieldType lookup once
+    // Build field_id → FieldType lookup (excluding archived fields)
     let field_types: std::collections::HashMap<String, FieldType> = {
         let defs = match doc.get(automerge::ROOT, "field_definitions").ok().flatten() {
             Some((_, id)) => id,
@@ -38,6 +38,13 @@ fn extract_custom_fields(
         let mut m = std::collections::HashMap::new();
         for key in keys {
             if let Some((_, obj)) = doc.get(&defs, key.as_str()).ok().flatten() {
+                let is_archived = match doc.get(&obj, "archived").ok().flatten() {
+                    Some((automerge::Value::Scalar(s), _)) => {
+                        matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
+                    }
+                    _ => false,
+                };
+                if is_archived { continue; }
                 if let Some(ts) = monotask_core::get_string(doc, &obj, "type").ok().flatten() {
                     if let Some(ft) = FieldType::from_str(&ts) {
                         m.insert(key, ft);

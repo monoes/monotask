@@ -58,6 +58,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: LinearCommands,
     },
+    /// Gmail / Outlook email integration (CRM)
+    Mail {
+        #[command(subcommand)]
+        cmd: MailCommands,
+    },
     /// Manage board-level custom field definitions
     Field {
         #[command(subcommand)]
@@ -526,6 +531,71 @@ enum LinearCommands {
     /// Unlink a board from Linear
     Unlink { board_id: String },
     /// Run a bidirectional sync for a board
+    Sync { board_id: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum MailCommands {
+    /// Connect Gmail via OAuth2 PKCE (BYO Google Cloud client ID)
+    GmailConnect {
+        /// Google OAuth2 client ID from Google Cloud Console
+        #[arg(long)]
+        client_id: String,
+    },
+    /// Connect Outlook via OAuth2 PKCE (BYO Azure client ID)
+    OutlookConnect {
+        /// Microsoft OAuth2 client ID from Azure portal
+        #[arg(long)]
+        client_id: String,
+        /// Azure tenant ID, or "common" for personal+work accounts
+        #[arg(long, default_value = "common")]
+        tenant_id: String,
+    },
+    /// Show connection status for all providers
+    Status,
+    /// Remove saved credentials for a provider
+    Disconnect {
+        /// Provider: gmail | outlook
+        provider: String,
+    },
+    /// Link a board to receive email contacts
+    Link {
+        board_id: String,
+        /// Provider(s) to sync: gmail | outlook | both
+        #[arg(long, default_value = "both")]
+        provider: String,
+        /// Column ID for new contacts (defaults to first column)
+        #[arg(long)]
+        inbox_col: Option<String>,
+        /// Number of recent emails to keep per contact as comments (default 2)
+        #[arg(long, default_value = "2")]
+        keep_last: u64,
+    },
+    /// Connect via IMAP (username + password — works with any provider)
+    ImapConnect {
+        /// IMAP server hostname (e.g. imap.gmail.com)
+        #[arg(long)]
+        host: String,
+        /// IMAP port (default 993 for TLS)
+        #[arg(long, default_value = "993")]
+        port: u16,
+        /// Email address / username
+        #[arg(long)]
+        username: String,
+        /// Password or app-specific password
+        #[arg(long)]
+        password: Option<String>,
+        /// Mailbox folder to sync (default INBOX)
+        #[arg(long, default_value = "INBOX")]
+        folder: String,
+    },
+    /// Show IMAP credential status and test the connection
+    ImapStatus,
+    /// Remove saved IMAP credentials
+    ImapDisconnect,
+    /// Unlink a board from email sync
+    Unlink { board_id: String },
+    /// Sync emails into a board
     Sync { board_id: String },
 }
 
@@ -1556,6 +1626,9 @@ async fn main() -> anyhow::Result<()> {
         Commands::Linear { cmd } => {
             cmd_linear(cmd, &dir, &mut storage, &identity).await?;
         }
+        Commands::Mail { cmd } => {
+            cmd_mail(cmd, &dir, &mut storage, &identity).await?;
+        }
     }
     Ok(())
 }
@@ -2182,6 +2255,144 @@ async fn cmd_linear(
         }
     }
     Ok(())
+}
+
+async fn cmd_mail(
+    cmd: MailCommands,
+    data_dir: &std::path::Path,
+    storage: &mut monotask_storage::Storage,
+    identity: &monotask_crypto::Identity,
+) -> anyhow::Result<()> {
+    use colored::Colorize;
+    match cmd {
+        MailCommands::GmailConnect { client_id } => {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let port = listener.local_addr()?.port();
+            let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+            let (verifier, challenge) = monotask_mail::generate_pkce();
+            let url = monotask_mail::build_auth_url("gmail", &client_id, "common", &challenge, &redirect_uri)?;
+            println!("Opening browser for Gmail authorization…");
+            println!("If the browser doesn't open, visit:\n  {url}");
+            open_url(&url);
+            monotask_mail::wait_and_complete_oauth(listener, data_dir, "gmail", &client_id, "common", &verifier, &redirect_uri).await?;
+            println!("{}", "✓ Gmail connected".green());
+        }
+        MailCommands::OutlookConnect { client_id, tenant_id } => {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let port = listener.local_addr()?.port();
+            let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+            let (verifier, challenge) = monotask_mail::generate_pkce();
+            let url = monotask_mail::build_auth_url("outlook", &client_id, &tenant_id, &challenge, &redirect_uri)?;
+            println!("Opening browser for Outlook authorization…");
+            println!("If the browser doesn't open, visit:\n  {url}");
+            open_url(&url);
+            monotask_mail::wait_and_complete_oauth(listener, data_dir, "outlook", &client_id, &tenant_id, &verifier, &redirect_uri).await?;
+            println!("{}", "✓ Outlook connected".green());
+        }
+        MailCommands::Status => {
+            let gmail = if monotask_mail::token_saved(data_dir, "gmail") { "connected".green() } else { "not connected".yellow() };
+            let outlook = if monotask_mail::token_saved(data_dir, "outlook") { "connected".green() } else { "not connected".yellow() };
+            println!("Gmail:   {gmail}");
+            println!("Outlook: {outlook}");
+        }
+        MailCommands::Disconnect { provider } => {
+            monotask_mail::delete_token(data_dir, &provider)?;
+            println!("Disconnected {provider}");
+        }
+        MailCommands::ImapConnect { host, port, username, password, folder } => {
+            let pwd = match password {
+                Some(p) => p,
+                None => {
+                    eprint!("Password (or app password): ");
+                    tokio::task::spawn_blocking(|| {
+                        let mut s = String::new();
+                        std::io::stdin().read_line(&mut s).map(|_| s.trim().to_string())
+                    }).await
+                    .map_err(|e| anyhow::anyhow!("thread error: {e}"))?
+                    .map_err(|e| anyhow::anyhow!("stdin error: {e}"))?
+                }
+            };
+            let creds = monotask_mail::ImapCredentials { host, port, username: username.clone(), password: pwd, folder };
+            // Test connection before saving
+            println!("Testing IMAP connection to {}:{}…", creds.host, creds.port);
+            let test_creds = creds.clone();
+            let test_result = tokio::task::spawn_blocking(move || {
+                monotask_mail::imap_client::fetch_since_sync_test(&test_creds)
+            }).await.map_err(|e| anyhow::anyhow!("thread error: {e}"))?;
+            match test_result {
+                Ok(()) => {
+                    monotask_mail::save_imap_credentials(data_dir, &creds)?;
+                    println!("{}", "✓ IMAP connected and credentials saved".green());
+                    println!("  Username: {username}");
+                    println!("  Tip: use `monotask mail link <BOARD_ID> --provider imap` to link a board.");
+                }
+                Err(e) => {
+                    anyhow::bail!("IMAP connection test failed: {e}\nCheck host, port, username, and password.");
+                }
+            }
+        }
+        MailCommands::ImapStatus => {
+            if monotask_mail::imap_credentials_saved(data_dir) {
+                if let Ok(Some(c)) = monotask_mail::load_imap_credentials(data_dir) {
+                    println!("IMAP: {} ({}:{})", "connected".green(), c.host, c.port);
+                    println!("  Username: {}", c.username);
+                    println!("  Folder:   {}", c.folder);
+                }
+            } else {
+                println!("IMAP: {}", "not configured — run `monotask mail imap-connect`".yellow());
+            }
+        }
+        MailCommands::ImapDisconnect => {
+            monotask_mail::delete_imap_credentials(data_dir)?;
+            println!("IMAP credentials removed.");
+        }
+        MailCommands::Link { board_id, provider, inbox_col, keep_last } => {
+            let mut doc = storage.load_board(&board_id)?;
+            let config = monotask_mail::MailConfig {
+                provider,
+                gmail_client_id: monotask_mail::load_token(data_dir, "gmail").ok().flatten()
+                    .map(|_| std::env::var("MAIL_GMAIL_CLIENT_ID").unwrap_or_default())
+                    .filter(|s| !s.is_empty()),
+                outlook_client_id: monotask_mail::load_token(data_dir, "outlook").ok().flatten()
+                    .map(|_| std::env::var("MAIL_OUTLOOK_CLIENT_ID").unwrap_or_default())
+                    .filter(|s| !s.is_empty()),
+                outlook_tenant_id: std::env::var("MAIL_OUTLOOK_TENANT_ID").unwrap_or_else(|_| "common".into()),
+                inbox_col_id: inbox_col,
+                keep_last,
+                last_sync: None,
+            };
+            monotask_mail::set_mail_config(&mut doc, Some(&config))?;
+            storage.save_board(&board_id, &mut doc)?;
+            println!("Linked board {board_id} to email sync (provider: {})", config.provider);
+            println!("Tip: set MAIL_GMAIL_CLIENT_ID / MAIL_OUTLOOK_CLIENT_ID env vars for sync.");
+        }
+        MailCommands::Unlink { board_id } => {
+            let mut doc = storage.load_board(&board_id)?;
+            monotask_mail::set_mail_config(&mut doc, None)?;
+            storage.save_board(&board_id, &mut doc)?;
+            println!("Unlinked board {board_id} from email sync");
+        }
+        MailCommands::Sync { board_id } => {
+            let mut doc = storage.load_board(&board_id)?;
+            let config = monotask_mail::get_mail_config(&doc)
+                .ok_or_else(|| anyhow::anyhow!("Board not linked to email. Run `monotask mail link` first."))?;
+            let actor_pk = identity.public_key_bytes().to_vec();
+            let result = monotask_mail::sync_board(&mut doc, data_dir, &config, &actor_pk).await?;
+            storage.save_board(&board_id, &mut doc)?;
+            println!("Sync complete: {} new contacts, {} updated, {} emails added",
+                result.contacts_created, result.contacts_updated, result.emails_added);
+        }
+    }
+    Ok(())
+}
+
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn(); }
 }
 
 fn print_ai_help() {
@@ -2986,6 +3197,42 @@ Bidirectional sync with Linear issues. Requires a Linear API key.
   - Pulls new Linear comments → adds comments to cards
   - Pushes new local cards → creates Linear issues
   - Pushes card state changes → updates Linear issue state
+
+────────────────────────────────────────────────────────────────────────────────
+## mail
+Gmail and Outlook email integration. Syncs email contacts into boards as cards.
+One card per unique sender. Recent emails stored as comments. BYO OAuth2 credentials.
+
+### mail gmail-connect --client-id <CLIENT_ID>
+  Connects Gmail via OAuth2 PKCE. Opens your browser for authorization.
+  Get a client ID: Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client ID (Desktop app).
+  Enable the Gmail API in your project first.
+
+### mail outlook-connect --client-id <CLIENT_ID> [--tenant-id <TENANT>]
+  Connects Outlook via OAuth2 PKCE. Opens your browser for authorization.
+  Get a client ID: Azure Portal → App Registrations → New registration (Mobile/Desktop app).
+  Tenant defaults to "common" (personal + work accounts).
+
+### mail status
+  Shows connection status for Gmail and Outlook.
+
+### mail disconnect <PROVIDER>
+  Removes saved credentials for "gmail" or "outlook".
+
+### mail link <BOARD_ID> [--provider both|gmail|outlook] [--inbox-col <COL_ID>] [--keep-last <N>]
+  Links a board to receive email contacts. New contacts go to the inbox column.
+  --provider: which provider(s) to sync (default: both)
+  --inbox-col: column ID for new contact cards (default: first column)
+  --keep-last: number of recent emails to keep as comments per contact (default: 2)
+  Set MAIL_GMAIL_CLIENT_ID and MAIL_OUTLOOK_CLIENT_ID env vars for sync.
+
+### mail unlink <BOARD_ID>
+  Removes the email sync link from a board.
+
+### mail sync <BOARD_ID>
+  Fetches emails since last sync (or last 30 days on first run), groups by sender,
+  and upserts one card per contact with recent emails as comments.
+  Custom fields updated: Email, Last Seen, Email Count, Provider, Labels.
 
 ────────────────────────────────────────────────────────────────────────────────
 ## sync
