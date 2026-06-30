@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="MonoTask" width="600" />
+</p>
+
 <div align="center">
 
 <img src="assets/logo.svg" width="160" alt="MonoTask monkey mascot"/>
