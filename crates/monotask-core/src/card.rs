@@ -560,6 +560,56 @@ pub fn attach_image(
     Ok(())
 }
 
+/// Add a card-to-card link.  `target_board_id` is the board containing `target_card_id`.
+/// Links are stored in a `links` Map on the card: `"<board_id>/<card_id>" → true`.
+pub fn add_card_link(
+    doc: &mut AutoCommit,
+    card_id: &str,
+    target_board_id: &str,
+    target_card_id: &str,
+) -> Result<()> {
+    let card_obj = get_card_obj(doc, card_id)?;
+    let links_map = match doc.get(&card_obj, "links")? {
+        Some((_, map_id)) => map_id,
+        None => doc.put_object(&card_obj, "links", ObjType::Map)?,
+    };
+    let key = format!("{target_board_id}/{target_card_id}");
+    doc.put(&links_map, key.as_str(), true)?;
+    Ok(())
+}
+
+/// Remove a card-to-card link.
+pub fn remove_card_link(
+    doc: &mut AutoCommit,
+    card_id: &str,
+    target_board_id: &str,
+    target_card_id: &str,
+) -> Result<()> {
+    let card_obj = get_card_obj(doc, card_id)?;
+    if let Some((_, links_map)) = doc.get(&card_obj, "links")? {
+        let key = format!("{target_board_id}/{target_card_id}");
+        doc.delete(&links_map, key.as_str())?;
+    }
+    Ok(())
+}
+
+/// List all card links. Returns `Vec<(board_id, card_id)>`.
+pub fn list_card_links(doc: &AutoCommit, card_id: &str) -> Result<Vec<(String, String)>> {
+    use automerge::ReadDoc;
+    let card_obj = get_card_obj(doc, card_id)?;
+    let links_map = match doc.get(&card_obj, "links")? {
+        Some((_, map_id)) => map_id,
+        None => return Ok(vec![]),
+    };
+    let mut result = Vec::new();
+    for key in doc.keys(&links_map) {
+        if let Some(slash) = key.find('/') {
+            result.push((key[..slash].to_string(), key[slash + 1..].to_string()));
+        }
+    }
+    Ok(result)
+}
+
 /// Write parent reference onto a child card. parent_board_id == "" clears the ref.
 pub fn set_parent_ref(doc: &mut AutoCommit, card_id: &str, parent_board_id: &str, parent_card_id: &str) -> Result<()> {
     let card_obj = get_card_obj(doc, card_id)?;

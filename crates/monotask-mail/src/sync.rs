@@ -103,7 +103,7 @@ struct FieldIds {
     last_seen: String,
     email_count: String,
     provider: String,
-    labels: String,
+    _labels: String,
 }
 
 fn ensure_crm_fields(doc: &mut AutoCommit) -> Result<FieldIds> {
@@ -129,8 +129,8 @@ fn ensure_crm_fields(doc: &mut AutoCommit) -> Result<FieldIds> {
         }
     }
 
-    let [email, last_seen, email_count, provider, labels] = ids;
-    Ok(FieldIds { email, last_seen, email_count, provider, labels })
+    let [email, last_seen, email_count, provider, _labels] = ids;
+    Ok(FieldIds { email, last_seen, email_count, provider, _labels })
 }
 
 fn resolve_inbox_col(doc: &AutoCommit, preferred: Option<&str>) -> Result<String> {

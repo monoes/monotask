@@ -2,19 +2,32 @@
 use std::process::Command;
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_app-cli"))
+    Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
         .args(["--data-dir", dir.to_str().unwrap()])
         .args(args)
         .output()
-        .expect("failed to run app-cli")
+        .expect("failed to run monotaskcli")
+}
+
+fn make_space(dir: &std::path::Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
+        .args(["--data-dir", dir.to_str().unwrap()])
+        .args(["space", "create", "TestSpace"])
+        .output()
+        .expect("failed to create space");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text.rfind('(').expect("no '(' in space create output");
+    let end = text.rfind(')').expect("no ')' in space create output");
+    text[start + 1..end].trim().to_string()
 }
 
 #[test]
 fn board_column_card_create_list() {
     let tmp = tempfile::tempdir().unwrap();
+    let sid = make_space(tmp.path());
 
     // Create board
-    let board_out = cli(tmp.path(), &["board", "create", "MyBoard", "--json"]);
+    let board_out = cli(tmp.path(), &["board", "create", "MyBoard", "--space", &sid, "--json"]);
     assert!(board_out.status.success(), "{}", String::from_utf8_lossy(&board_out.stderr));
     let board: serde_json::Value = serde_json::from_slice(&board_out.stdout).unwrap();
     let board_id = board["id"].as_str().unwrap();
@@ -34,6 +47,6 @@ fn board_column_card_create_list() {
     // List boards
     let list_out = cli(tmp.path(), &["board", "list", "--json"]);
     assert!(list_out.status.success(), "{}", String::from_utf8_lossy(&list_out.stderr));
-    let boards: Vec<String> = serde_json::from_slice(&list_out.stdout).unwrap();
+    let boards: Vec<serde_json::Value> = serde_json::from_slice(&list_out.stdout).unwrap();
     assert_eq!(boards.len(), 1);
 }

@@ -1,16 +1,22 @@
-use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use libp2p::{
-    identity, noise, tcp, yamux, PeerId, Swarm, SwarmBuilder,
-    swarm::SwarmEvent,
-    futures::StreamExt,
-};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 use monotask_storage::Storage;
 use crate::{NetCommand, NetConfig, NetError, NetEvent};
-use crate::behaviour::{ComposedBehaviour, ComposedBehaviourEvent};
+use crate::sync_protocol::{read_cbor, write_cbor, SyncRequest, SyncResponse, PROTOCOL_ALPN};
 
+// ---------------------------------------------------------------------------
+// Internal event: per-connection tasks → run_inner
+// ---------------------------------------------------------------------------
+enum PeerLifecycle {
+    Disconnected { node_id_hex: String },
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 pub(crate) async fn run(
     config: NetConfig,
     storage: Arc<Mutex<Storage>>,
@@ -23,38 +29,6 @@ pub(crate) async fn run(
     }
 }
 
-fn build_swarm(identity_bytes: [u8; 32]) -> Result<Swarm<ComposedBehaviour>, NetError> {
-    // Bridge: 32-byte seed → libp2p Ed25519 keypair (two separate dalek crates — bytes only)
-    let mut key_bytes = identity_bytes;
-    let secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut key_bytes)
-        .map_err(|e| NetError::Libp2p(e.to_string()))?;
-    let ed_kp = libp2p::identity::ed25519::Keypair::from(secret);
-    let keypair = identity::Keypair::from(ed_kp);
-
-    let swarm = SwarmBuilder::with_existing_identity(keypair)
-        .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )
-        .map_err(|e| NetError::Libp2p(e.to_string()))?
-        .with_quic()
-        .with_relay_client(noise::Config::new, yamux::Config::default)
-        .map_err(|e| NetError::Libp2p(e.to_string()))?
-        .with_behaviour(|key, relay_behaviour| {
-            ComposedBehaviour::new(key, relay_behaviour)
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    e.to_string().into()
-                })
-        })
-        .map_err(|e| NetError::Libp2p(format!("{e:?}")))?
-        .with_swarm_config(|cfg| cfg.with_idle_connection_timeout(Duration::from_secs(300)))
-        .build();
-
-    Ok(swarm)
-}
-
 async fn run_inner(
     config: NetConfig,
     storage: Arc<Mutex<Storage>>,
@@ -62,473 +36,481 @@ async fn run_inner(
     cmd_rx: &mut mpsc::Receiver<NetCommand>,
     event_tx: &mpsc::Sender<NetEvent>,
 ) -> Result<(), NetError> {
-    use libp2p::Multiaddr;
-    use crate::discovery::{announce_spaces, bootstrap_peers};
+    let endpoint = Arc::new(
+        crate::behaviour::build_endpoint(identity_bytes, &config).await?,
+    );
 
-    let mut swarm = build_swarm(identity_bytes)?;
+    // Shared mutable state accessed from both the main loop and spawned tasks.
+    let connections: Arc<Mutex<HashMap<String, iroh::endpoint::Connection>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let sync_states: Arc<Mutex<HashMap<String, automerge::sync::State>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let my_spaces: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Try the configured port first; fall back to OS-assigned port if it's taken.
-    let primary_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", config.listen_port)
-        .parse()
-        .map_err(|e: libp2p::multiaddr::Error| NetError::Libp2p(e.to_string()))?;
-    if swarm.listen_on(primary_addr.clone()).is_err() {
-        eprintln!("NET: port {} in use, falling back to OS-assigned port", config.listen_port);
-        let fallback: Multiaddr = "/ip4/0.0.0.0/tcp/0".parse()
-            .map_err(|e: libp2p::multiaddr::Error| NetError::Libp2p(e.to_string()))?;
-        swarm.listen_on(fallback)
-            .map_err(|e| NetError::Libp2p(e.to_string()))?;
-    }
+    // Internal lifecycle channel.
+    let (lifecycle_tx, mut lifecycle_rx) = mpsc::channel::<PeerLifecycle>(64);
 
-    for (peer_id, addr) in bootstrap_peers() {
-        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-    }
-    swarm.behaviour_mut().kademlia.bootstrap().ok();
-
-    // Dial any manually-specified bootstrap peers immediately (bypasses mDNS).
-    for addr_str in &config.bootstrap_peers {
-        match addr_str.parse::<Multiaddr>() {
-            Ok(addr) => {
-                tracing::info!("net: dialing bootstrap peer {addr}");
-                let _ = swarm.dial(addr);
-            }
-            Err(e) => tracing::warn!("net: invalid peer addr '{addr_str}': {e}"),
+    // Peer addresses to re-dial; grows via AddPeer and saved_peers.txt.
+    let mut bootstrap_peer_addrs: Vec<String> = load_saved_peers(&config.data_dir);
+    for addr in &config.bootstrap_peers {
+        if !bootstrap_peer_addrs.contains(addr) {
+            bootstrap_peer_addrs.push(addr.clone());
         }
     }
 
-    // Keep a mutable list of peer addresses for reconnection.
-    // This grows as AddPeer commands arrive so dynamically-added peers
-    // are also re-dialed by the 30-second reconnect tick.
-    let mut bootstrap_peer_addrs: Vec<String> = config.bootstrap_peers.clone();
+    // Accept loop — runs as a separate Tokio task.
+    {
+        let ep = endpoint.clone();
+        let conns = connections.clone();
+        let states = sync_states.clone();
+        let spaces = my_spaces.clone();
+        let ev_tx = event_tx.clone();
+        let lc_tx = lifecycle_tx.clone();
+        let storage = storage.clone();
+        tokio::spawn(async move {
+            accept_loop(ep, conns, states, spaces, identity_bytes, ev_tx, lc_tx, storage).await;
+        });
+    }
 
-    let mut pubkey_cache: HashMap<PeerId, libp2p::identity::PublicKey> = HashMap::new();
-    let mut connected_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
-    let mut hello_sent_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
-    let mut my_spaces: Vec<String> = Vec::new();
+    // LAN discovery loop.
+    let our_node_id_hex = hex::encode(endpoint.id().as_bytes());
+    {
+        // Resolve the actual bound port (in case listen_port was 0 = OS-assigned).
+        let actual_port = endpoint.bound_sockets()
+            .into_iter()
+            .filter_map(|a| if a.is_ipv4() { Some(a.port()) } else { None })
+            .next()
+            .unwrap_or(config.listen_port);
+        let (lan_tx, mut lan_rx) = mpsc::channel::<crate::discovery::DiscoveredPeer>(32);
+        let node_id = our_node_id_hex.clone();
+        let port = actual_port;
+        tokio::spawn(async move {
+            crate::discovery::run_lan_discovery(node_id, port, lan_tx).await;
+        });
+        let ep = endpoint.clone();
+        let conns = connections.clone();
+        let states = sync_states.clone();
+        let spaces = my_spaces.clone();
+        let ev_tx = event_tx.clone();
+        let lc_tx = lifecycle_tx.clone();
+        let storage = storage.clone();
+        tokio::spawn(async move {
+            while let Some(discovered) = lan_rx.recv().await {
+                // Only dial if not already connected.
+                let already = conns.lock().unwrap().contains_key(&discovered.node_id_hex);
+                if already { continue }
+                if let Ok(node_id) = parse_node_id(&discovered.node_id_hex) {
+                    let node_addr = EndpointAddr::new(node_id)
+                        .with_ip_addr(discovered.addr);
+                    dial_and_sync(
+                        ep.clone(), node_addr, conns.clone(), states.clone(),
+                        spaces.clone(), identity_bytes, ev_tx.clone(),
+                        lc_tx.clone(), storage.clone(),
+                    ).await;
+                }
+            }
+        });
+    }
+
+    // Connect to bootstrap peers immediately at startup.
+    for addr in bootstrap_peer_addrs.clone() {
+        if let Some(node_addr) = parse_peer_addr(&addr) {
+            let ep = endpoint.clone();
+            let conns = connections.clone();
+            let states = sync_states.clone();
+            let spaces = my_spaces.clone();
+            let ev_tx = event_tx.clone();
+            let lc_tx = lifecycle_tx.clone();
+            let storage = storage.clone();
+            tokio::spawn(async move {
+                dial_and_sync(ep, node_addr, conns, states, spaces, identity_bytes, ev_tx, lc_tx, storage).await;
+            });
+        }
+    }
+
+    let mut reconnect_tick = tokio::time::interval(Duration::from_secs(30));
     let mut reannounce = tokio::time::interval(Duration::from_secs(20 * 3600));
-    // Reconnect to saved peers every 10 seconds when not connected.
-    let mut reconnect_tick = tokio::time::interval(Duration::from_secs(10));
-    let mut sync_states: HashMap<String, automerge::sync::State> = HashMap::new();
+    let mut presence_tick = tokio::time::interval(Duration::from_secs(30));
+    // Suppress the immediate first tick so we don't duplicate the startup dials above.
+    reconnect_tick.reset();
+    reannounce.reset();
+    presence_tick.reset();
 
     loop {
         tokio::select! {
+            Some(lc) = lifecycle_rx.recv() => {
+                match lc {
+                    PeerLifecycle::Disconnected { node_id_hex } => {
+                        connections.lock().unwrap().remove(&node_id_hex);
+                        sync_states.lock().unwrap()
+                            .retain(|k, _| !k.contains(&node_id_hex));
+                        let _ = event_tx.send(NetEvent::PeerDisconnected {
+                            peer_id: node_id_hex,
+                        }).await;
+                    }
+                }
+            }
+
             Some(cmd) = cmd_rx.recv() => {
                 match cmd {
                     NetCommand::Stop => {
                         tracing::info!("net: stopping");
+                        endpoint.close().await;
                         return Ok(());
                     }
+
                     NetCommand::AnnounceSpaces { space_ids } => {
-                        my_spaces = space_ids.clone();
-                        announce_spaces(&mut swarm.behaviour_mut().kademlia, &space_ids);
-                        // Also query DHT for peers already in these spaces (internet discovery)
-                        for space_id in &space_ids {
-                            crate::discovery::query_space_peers(
-                                &mut swarm.behaviour_mut().kademlia,
-                                space_id,
-                            );
-                        }
-                        // Push the updated space list to already-connected peers.
-                        // Clear hello_sent_peers first so the updated space doc is sent.
-                        for &peer_id in &connected_peers {
-                            hello_sent_peers.remove(&peer_id);
-                            hello_sent_peers.insert(peer_id);
-                            initiate_hello(&mut swarm, &storage, &my_spaces, identity_bytes, peer_id);
+                        *my_spaces.lock().unwrap() = space_ids.clone();
+                        // Re-Hello all connected peers so they get our updated space doc.
+                        sync_states.lock().unwrap().retain(|k, _| !k.starts_with("i/"));
+                        let conns: Vec<_> = connections.lock().unwrap()
+                            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        for (_, conn) in conns {
+                            let storage = storage.clone();
+                            let spaces = space_ids.clone();
+                            let states = sync_states.clone();
+                            let ev_tx = event_tx.clone();
+                            tokio::spawn(async move {
+                                initiate_hello_and_sync(
+                                    &conn, &storage, &spaces, identity_bytes, &states, &ev_tx,
+                                ).await;
+                            });
                         }
                     }
+
                     NetCommand::TriggerSync { board_id } => {
-                        use crate::sync_protocol::SyncRequest;
-                        use automerge::sync::SyncDoc;
-
-                        eprintln!("TRIGGER_SYNC[{board_id:.8}]: {} connected peers", connected_peers.len());
-                        // If no peers are connected, re-dial saved bootstrap peers so the
-                        // next connection event will trigger a full sync automatically.
-                        if connected_peers.is_empty() {
-                            for addr_str in &bootstrap_peer_addrs {
-                                if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
-                                    let _ = swarm.dial(addr);
+                        let conns: Vec<_> = connections.lock().unwrap()
+                            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        if conns.is_empty() {
+                            for addr in &bootstrap_peer_addrs {
+                                if let Some(node_addr) = parse_peer_addr(addr) {
+                                    let _ = endpoint.connect(node_addr, PROTOCOL_ALPN).await;
                                 }
                             }
                         }
-                        if !connected_peers.is_empty() {
-                            // Clear stale initiator states so the peer gets the latest changes.
-                            for peer_id in &connected_peers {
-                                sync_states.remove(&format!("i/{peer_id}/{board_id}"));
-                            }
-
-                            let peers: Vec<PeerId> = connected_peers.iter().copied().collect();
-                            let mut doc_opt = {
-                                let guard = storage.lock().unwrap();
-                                guard.load_board(&board_id).ok()
-                            };
-
-                            if let Some(ref mut doc) = doc_opt {
-                                for peer_id in &peers {
-                                    let sync_key = format!("i/{peer_id}/{board_id}");
-                                    let sync_state = sync_states
-                                        .entry(sync_key)
-                                        .or_insert_with(automerge::sync::State::new);
-                                    if let Some(msg) = doc.sync().generate_sync_message(sync_state) {
-                                        let bytes = msg.encode();
-                                        eprintln!("TRIGGER_SYNC[{board_id:.8}]: → {peer_id} ({} bytes)", bytes.len());
-                                        swarm.behaviour_mut().sync.send_request(
-                                            peer_id,
-                                            SyncRequest::BoardSync {
-                                                board_id: board_id.clone(),
-                                                sync_message: bytes,
-                                            },
-                                        );
-                                    }
-                                }
-                            } else {
-                                eprintln!("TRIGGER_SYNC[{board_id:.8}]: board not found, skipping");
-                            }
+                        for (peer_id, conn) in conns {
+                            let board_id = board_id.clone();
+                            let storage = storage.clone();
+                            let states = sync_states.clone();
+                            let ev_tx = event_tx.clone();
+                            tokio::spawn(async move {
+                                sync_board_with_peer(
+                                    &conn, &peer_id, &board_id, &storage, &states, &ev_tx,
+                                ).await;
+                            });
                         }
                     }
+
                     NetCommand::ForceRediscovery => {
-                        eprintln!("FORCE_REDISCOVERY: spaces={} connected_peers={}", my_spaces.len(), connected_peers.len());
-                        // Clear all initiator sync states so the next Hello round forces a
-                        // full re-sync even for boards where the peer was previously "up to date".
-                        sync_states.retain(|k, _| !k.starts_with("i/"));
-                        eprintln!("FORCE_REDISCOVERY: cleared initiator sync states, re-Hello {} peers", connected_peers.len());
-                        if !my_spaces.is_empty() {
-                            crate::discovery::announce_spaces(&mut swarm.behaviour_mut().kademlia, &my_spaces);
-                            for space_id in &my_spaces {
-                                crate::discovery::query_space_peers(&mut swarm.behaviour_mut().kademlia, space_id);
-                            }
-                        }
-                        // Re-Hello all currently connected peers to trigger a fresh sync round.
-                        // Clear hello_sent_peers so the dedup guard doesn't block forced re-hellos.
-                        for &peer_id in &connected_peers {
-                            hello_sent_peers.remove(&peer_id);
-                            hello_sent_peers.insert(peer_id);
-                            initiate_hello(&mut swarm, &storage, &my_spaces, identity_bytes, peer_id);
+                        sync_states.lock().unwrap().retain(|k, _| !k.starts_with("i/"));
+                        let conns: Vec<_> = connections.lock().unwrap()
+                            .iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                        let spaces = my_spaces.lock().unwrap().clone();
+                        for (_, conn) in conns {
+                            let storage = storage.clone();
+                            let spaces = spaces.clone();
+                            let states = sync_states.clone();
+                            let ev_tx = event_tx.clone();
+                            tokio::spawn(async move {
+                                initiate_hello_and_sync(
+                                    &conn, &storage, &spaces, identity_bytes, &states, &ev_tx,
+                                ).await;
+                            });
                         }
                     }
+
                     NetCommand::AddPeer { addr } => {
-                        use libp2p::Multiaddr;
-                        match addr.parse::<Multiaddr>() {
-                            Ok(multiaddr) => {
-                                eprintln!("ADDPEER: dialing {multiaddr}");
-                                let _ = swarm.dial(multiaddr);
-                                // Also register for future reconnect attempts so the
-                                // 30-second tick re-dials after a disconnect.
-                                if !bootstrap_peer_addrs.contains(&addr) {
-                                    bootstrap_peer_addrs.push(addr);
-                                }
-                            }
-                            Err(e) => eprintln!("ADDPEER: invalid addr '{addr}': {e}"),
+                        if !bootstrap_peer_addrs.contains(&addr) {
+                            bootstrap_peer_addrs.push(addr.clone());
+                            save_peer_addr(&config.data_dir, &addr);
+                        }
+                        if let Some(node_addr) = parse_peer_addr(&addr) {
+                            dial_and_sync(
+                                endpoint.clone(), node_addr,
+                                connections.clone(), sync_states.clone(),
+                                my_spaces.clone(), identity_bytes,
+                                event_tx.clone(), lifecycle_tx.clone(), storage.clone(),
+                            ).await;
+                        } else {
+                            tracing::warn!("net: invalid peer addr '{addr}'");
                         }
                     }
+
                     NetCommand::GetPeers { reply } => {
-                        let peers: Vec<String> = connected_peers
-                            .iter()
-                            .map(|p| p.to_string())
-                            .collect();
+                        let peers = connections.lock().unwrap().keys().cloned().collect();
                         let _ = reply.send(peers);
                     }
+
                     NetCommand::GetListenAddrs { reply } => {
-                        let addrs: Vec<String> = swarm.listeners()
-                            .map(|a| a.to_string())
-                            .collect();
-                        let _ = reply.send(addrs);
+                        let addr = format!("{:?}", endpoint.addr());
+                        let _ = reply.send(vec![addr]);
                     }
+
                     NetCommand::GetPeerPubkeys { reply } => {
-                        let map: std::collections::HashMap<String, String> = pubkey_cache
-                            .iter()
-                            .filter_map(|(peer_id, pk)| {
-                                pk.clone().try_into_ed25519().ok().map(|ed_pk| {
-                                    (peer_id.to_string(), hex::encode(ed_pk.to_bytes()))
-                                })
-                            })
+                        // With iroh, the peer's NodeId IS their ed25519 public key.
+                        let map = connections.lock().unwrap()
+                            .keys()
+                            .map(|id| (id.clone(), id.clone()))
                             .collect();
                         let _ = reply.send(map);
                     }
                 }
             }
 
-            event = swarm.next() => {
-                let Some(event) = event else { break };
-                handle_swarm_event(
-                    event,
-                    &mut swarm,
-                    &storage,
-                    &mut pubkey_cache,
-                    &mut connected_peers,
-                    &mut hello_sent_peers,
-                    &my_spaces,
-                    identity_bytes,
-                    event_tx,
-                    &mut sync_states,
-                    &mut bootstrap_peer_addrs,
-                    &config.data_dir,
-                ).await;
+            _ = reconnect_tick.tick() => {
+                if connections.lock().unwrap().is_empty() && !bootstrap_peer_addrs.is_empty() {
+                    for addr in bootstrap_peer_addrs.clone() {
+                        if let Some(node_addr) = parse_peer_addr(&addr) {
+                            let ep = endpoint.clone();
+                            let conns = connections.clone();
+                            let states = sync_states.clone();
+                            let spaces = my_spaces.clone();
+                            let ev_tx = event_tx.clone();
+                            let lc_tx = lifecycle_tx.clone();
+                            let storage = storage.clone();
+                            tokio::spawn(async move {
+                                dial_and_sync(ep, node_addr, conns, states, spaces,
+                                    identity_bytes, ev_tx, lc_tx, storage).await;
+                            });
+                        }
+                    }
+                }
             }
 
             _ = reannounce.tick() => {
-                if !my_spaces.is_empty() {
-                    announce_spaces(&mut swarm.behaviour_mut().kademlia, &my_spaces);
-                    for space_id in &my_spaces {
-                        crate::discovery::query_space_peers(
-                            &mut swarm.behaviour_mut().kademlia,
-                            space_id,
-                        );
-                    }
-                }
+                // iroh relay registration is maintained automatically.
+                // LAN discovery handles periodic re-announcements.
             }
 
-            _ = reconnect_tick.tick() => {
-                // Re-dial saved peers whenever we have no active connections.
-                if connected_peers.is_empty() && !bootstrap_peer_addrs.is_empty() {
-                    eprintln!("NET: no connected peers, re-dialing {} saved peer(s)", bootstrap_peer_addrs.len());
-                    for addr_str in &bootstrap_peer_addrs {
-                        if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
-                            let _ = swarm.dial(addr);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-async fn handle_swarm_event(
-    event: SwarmEvent<ComposedBehaviourEvent>,
-    swarm: &mut Swarm<ComposedBehaviour>,
-    storage: &Arc<Mutex<Storage>>,
-    pubkey_cache: &mut HashMap<PeerId, libp2p::identity::PublicKey>,
-    connected_peers: &mut std::collections::HashSet<PeerId>,
-    hello_sent_peers: &mut std::collections::HashSet<PeerId>,
-    my_spaces: &[String],
-    identity_bytes: [u8; 32],
-    event_tx: &mpsc::Sender<NetEvent>,
-    sync_states: &mut HashMap<String, automerge::sync::State>,
-    bootstrap_peer_addrs: &mut Vec<String>,
-    data_dir: &std::path::Path,
-) {
-    use libp2p::{identify, mdns, kad, request_response};
-    match event {
-        SwarmEvent::Behaviour(ComposedBehaviourEvent::Identify(
-            identify::Event::Received { peer_id, info, .. }
-        )) => {
-            pubkey_cache.insert(peer_id, info.public_key);
-            for addr in info.listen_addrs {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-            }
-            // Send Hello only after Identify so the remote peer has our pubkey cached.
-            // H8: skip if we already said hello to this peer (dedup on reconnect).
-            if !hello_sent_peers.contains(&peer_id) {
-                hello_sent_peers.insert(peer_id);
-                initiate_hello(swarm, storage, my_spaces, identity_bytes, peer_id);
-            }
-        }
-
-        SwarmEvent::Behaviour(ComposedBehaviourEvent::Mdns(
-            mdns::Event::Discovered(peers)
-        )) => {
-            for (peer_id, addr) in peers {
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
-                let _ = swarm.dial(peer_id);
-                tracing::debug!("net: mDNS discovered {peer_id}");
-            }
-        }
-
-        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            connected_peers.insert(peer_id);
-            let _ = event_tx.send(NetEvent::PeerConnected { peer_id: peer_id.to_string() }).await;
-            // H7: If we already know our spaces and haven't said hello to this peer yet,
-            // send Hello now. On first connect Identify::Received fires shortly after and
-            // also sends Hello (guarded by hello_sent_peers). On reconnect, Identify may
-            // not re-fire, so this ensures the peer gets our current space doc.
-            if !my_spaces.is_empty() && !hello_sent_peers.contains(&peer_id) {
-                hello_sent_peers.insert(peer_id);
-                initiate_hello(swarm, storage, my_spaces, identity_bytes, peer_id);
-            }
-            // M8: Persist newly discovered peer addresses so they survive restarts.
-            let addr = match &endpoint {
-                libp2p::core::ConnectedPoint::Dialer { address, .. } => Some(address.clone()),
-                libp2p::core::ConnectedPoint::Listener { send_back_addr, .. } => Some(send_back_addr.clone()),
-            };
-            if let Some(addr) = addr {
-                let addr_str = addr.to_string();
-                if !bootstrap_peer_addrs.contains(&addr_str) {
-                    bootstrap_peer_addrs.push(addr_str.clone());
-                    let peers_file = data_dir.join("saved_peers.txt");
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .append(true)
-                        .create(true)
-                        .open(&peers_file)
-                    {
-                        use std::io::Write;
-                        let _ = writeln!(f, "{}", addr_str);
-                    }
-                }
-            }
-        }
-
-        SwarmEvent::ConnectionClosed { peer_id, .. } => {
-            connected_peers.remove(&peer_id);
-            // H8: clear hello state so the peer gets a fresh Hello on next connect.
-            hello_sent_peers.remove(&peer_id);
-            // Prune sync states for this peer to prevent unbounded growth
-            let peer_str = peer_id.to_string();
-            sync_states.retain(|k, _| !k.contains(&peer_str));
-            let _ = event_tx.send(NetEvent::PeerDisconnected { peer_id: peer_str }).await;
-        }
-
-        SwarmEvent::Behaviour(ComposedBehaviourEvent::Sync(
-            request_response::Event::Message {
-                peer,
-                message: request_response::Message::Request { request, channel, .. },
-            }
-        )) => {
-            let response = handle_sync_request(
-                request, peer, storage, pubkey_cache, my_spaces, sync_states,
-            );
-            let _ = swarm.behaviour_mut().sync.send_response(channel, response);
-        }
-
-        SwarmEvent::Behaviour(ComposedBehaviourEvent::Sync(
-            request_response::Event::Message {
-                peer,
-                message: request_response::Message::Response { response, .. },
-            }
-        )) => {
-            use crate::sync_protocol::{SyncRequest, SyncResponse};
-            use automerge::sync::SyncDoc;
-            // HelloAck must be handled here where we have &mut swarm to send follow-up BoardSync requests
-            if let SyncResponse::HelloAck { space_id, board_ids: their_board_ids, space_doc_bytes } = response {
-                eprintln!("HELLOACK from {peer}: space={space_id:.8} their_boards={}", their_board_ids.len());
-                let our_board_ids = {
-                    let mut guard = storage.lock().unwrap();
-                    // Merge peer's space doc — updates members, boards, name in SQL.
-                    // merge_space_doc already adds all LIVE board refs from the merged doc
-                    // to space_boards, so we must NOT blindly add their_board_ids here:
-                    // doing so would resurrect boards we've deleted (whose refs are tombstoned
-                    // in our Automerge doc but may still be in the peer's space_boards).
-                    if !space_doc_bytes.is_empty() {
-                        merge_space_doc(&space_id, &space_doc_bytes, &mut guard);
-                    }
-                    guard.list_board_ids().unwrap_or_default()
+            _ = presence_tick.tick() => {
+                // Broadcast our presence status to all connected peers.
+                let my_pubkey = hex::encode({
+                    let secret = iroh::SecretKey::from_bytes(&identity_bytes);
+                    *secret.public().as_bytes()
+                });
+                let (my_status, my_display_name) = {
+                    let guard = storage.lock().unwrap();
+                    let status = guard.conn().query_row(
+                        "SELECT presence, display_name FROM user_profile WHERE pk = 'local' LIMIT 1",
+                        [], |r| Ok((r.get::<_, String>(0).unwrap_or_else(|_| "online".into()),
+                                    r.get::<_, String>(1).unwrap_or_default()))
+                    ).unwrap_or_else(|_| ("online".into(), String::new()));
+                    status
                 };
-                let all_boards: std::collections::HashSet<String> =
-                    our_board_ids.into_iter().chain(their_board_ids).collect();
-                eprintln!("HELLOACK: syncing {} boards total", all_boards.len());
-                for board_id in all_boards {
-                    // Use "i/" prefix to distinguish initiator state from responder state.
-                    // Both peers may simultaneously initiate sync for the same board, and
-                    // sharing one state object between the two roles corrupts the protocol.
-                    let sync_state = sync_states
-                        .entry(format!("i/{peer}/{board_id}"))
-                        .or_insert_with(automerge::sync::State::new);
-                    let msg_bytes = {
-                        let guard = storage.lock().unwrap();
-                        let mut doc = match guard.load_board(&board_id) {
-                            Ok(d) => d,
-                            Err(_) => automerge::AutoCommit::new(),
-                        };
-                        let msg = doc.sync().generate_sync_message(sync_state);
-                        msg.map(|m| m.encode())
-                    };
-                    eprintln!("HELLOACK board {board_id:.8}: sending_sync={}", msg_bytes.is_some());
-                    if let Some(bytes) = msg_bytes {
-                        swarm.behaviour_mut().sync.send_request(
-                            &peer,
-                            SyncRequest::BoardSync { board_id, sync_message: bytes },
-                        );
-                    }
-                }
-            } else if let SyncResponse::BoardSync { board_id, sync_message } = response {
-                // Multi-round sync: process the incoming message, then send follow-up if needed.
-                // handle_sync_response lacks &mut swarm, so we handle BoardSync here.
-                let sync_key = format!("i/{peer}/{board_id}");
-                let sync_state = sync_states.entry(sync_key).or_insert_with(automerge::sync::State::new);
-                eprintln!("RESP_BOARDSYNC[{board_id:.8}]: has_msg={}", sync_message.is_some());
-                match sync_message {
-                    None => {
-                        // Peer has converged on this board
-                        eprintln!("RESP_BOARDSYNC[{board_id:.8}]: peer converged → BoardSynced");
-                        let _ = event_tx.send(NetEvent::BoardSynced {
-                            board_id,
-                            peer_id: peer.to_string(),
-                        }).await;
-                    }
-                    Some(msg_bytes) => {
-                        eprintln!("RESP_BOARDSYNC[{board_id:.8}]: calling process_incoming_sync");
-                        match process_incoming_sync(&board_id, &msg_bytes, storage, sync_state) {
-                            Err(e) => {
-                                eprintln!("RESP_BOARDSYNC[{board_id:.8}]: ERROR: {e}");
-                                let _ = event_tx.send(NetEvent::SyncError {
-                                    board_id,
-                                    error: e.to_string(),
-                                }).await;
-                            }
-                            Ok(Some(reply_bytes)) => {
-                                // Send follow-up round (contains our changes the peer is missing)
-                                eprintln!("RESP_BOARDSYNC[{board_id:.8}]: sending follow-up round ({} bytes)", reply_bytes.len());
-                                swarm.behaviour_mut().sync.send_request(
-                                    &peer,
-                                    SyncRequest::BoardSync {
-                                        board_id: board_id.clone(),
-                                        sync_message: reply_bytes,
-                                    },
-                                );
-                            }
-                            Ok(None) => {
-                                // We've converged — nothing more to send
-                                eprintln!("RESP_BOARDSYNC[{board_id:.8}]: converged → BoardSynced");
-                                let _ = event_tx.send(NetEvent::BoardSynced {
-                                    board_id,
-                                    peer_id: peer.to_string(),
-                                }).await;
-                            }
+                let presence_req = SyncRequest::Presence {
+                    pubkey: my_pubkey,
+                    status: my_status,
+                    display_name: my_display_name,
+                };
+                let conns: Vec<iroh::endpoint::Connection> = connections.lock().unwrap()
+                    .values().cloned().collect();
+                for conn in conns {
+                    let req = presence_req.clone();
+                    tokio::spawn(async move {
+                        if let Ok((mut send, _recv)) = conn.open_bi().await {
+                            let _ = write_cbor(&mut send, &req).await;
                         }
-                    }
-                }
-            } else {
-                handle_sync_response(response, peer, storage, event_tx, sync_states).await;
-            }
-        }
-
-        SwarmEvent::Behaviour(ComposedBehaviourEvent::Kademlia(
-            kad::Event::OutboundQueryProgressed {
-                result: kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
-                    providers, ..
-                })),
-                ..
-            }
-        )) => {
-            for provider in providers {
-                if provider != *swarm.local_peer_id() {
-                    tracing::debug!("net: DHT found provider {provider}, dialing");
-                    let _ = swarm.dial(provider);
+                    });
                 }
             }
         }
-
-        // M9: Re-dial all known peers when a new listen address appears (network change).
-        SwarmEvent::NewListenAddr { address, .. } => {
-            eprintln!("NET: new listen addr {address}");
-            for addr_str in bootstrap_peer_addrs.iter() {
-                if let Ok(addr) = addr_str.parse::<libp2p::Multiaddr>() {
-                    let _ = swarm.dial(addr);
-                }
-            }
-        }
-
-        _ => {}
     }
 }
 
-fn initiate_hello(
-    swarm: &mut Swarm<ComposedBehaviour>,
+// ---------------------------------------------------------------------------
+// Accept loop (runs as a separate task)
+// ---------------------------------------------------------------------------
+async fn accept_loop(
+    endpoint: Arc<Endpoint>,
+    connections: Arc<Mutex<HashMap<String, iroh::endpoint::Connection>>>,
+    sync_states: Arc<Mutex<HashMap<String, automerge::sync::State>>>,
+    my_spaces: Arc<Mutex<Vec<String>>>,
+    identity_bytes: [u8; 32],
+    event_tx: mpsc::Sender<NetEvent>,
+    lifecycle_tx: mpsc::Sender<PeerLifecycle>,
+    storage: Arc<Mutex<Storage>>,
+) {
+    while let Some(incoming) = endpoint.accept().await {
+        let conn = match incoming.await {
+            Ok(c) => c,
+            Err(e) => { tracing::debug!("net: incoming connection failed: {e}"); continue }
+        };
+        let node_id_hex = hex::encode(conn.remote_id().as_bytes());
+        connections.lock().unwrap().insert(node_id_hex.clone(), conn.clone());
+
+        let _ = event_tx.send(NetEvent::PeerConnected { peer_id: node_id_hex.clone() }).await;
+
+        // Initiate Hello on the new connection.
+        let spaces = my_spaces.lock().unwrap().clone();
+        if !spaces.is_empty() {
+            let conn2 = conn.clone();
+            let storage = storage.clone();
+            let states = sync_states.clone();
+            let ev_tx = event_tx.clone();
+            tokio::spawn(async move {
+                initiate_hello_and_sync(&conn2, &storage, &spaces, identity_bytes, &states, &ev_tx).await;
+            });
+        }
+
+        // Per-connection incoming-stream handler.
+        let lc_tx = lifecycle_tx.clone();
+        let storage = storage.clone();
+        let states = sync_states.clone();
+        let spaces_arc = my_spaces.clone();
+        tokio::spawn(async move {
+            handle_incoming_streams(conn, node_id_hex, storage, states, spaces_arc, identity_bytes, lc_tx).await;
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dial a peer and kick off Hello+sync (idempotent — skips if already connected)
+// ---------------------------------------------------------------------------
+async fn dial_and_sync(
+    endpoint: Arc<Endpoint>,
+    node_addr: EndpointAddr,
+    connections: Arc<Mutex<HashMap<String, iroh::endpoint::Connection>>>,
+    sync_states: Arc<Mutex<HashMap<String, automerge::sync::State>>>,
+    my_spaces: Arc<Mutex<Vec<String>>>,
+    identity_bytes: [u8; 32],
+    event_tx: mpsc::Sender<NetEvent>,
+    lifecycle_tx: mpsc::Sender<PeerLifecycle>,
+    storage: Arc<Mutex<Storage>>,
+) {
+    let node_id_hex = hex::encode(node_addr.id.as_bytes());
+    if connections.lock().unwrap().contains_key(&node_id_hex) { return }
+
+    let conn = match endpoint.connect(node_addr, PROTOCOL_ALPN).await {
+        Ok(c) => c,
+        Err(e) => { tracing::debug!("net: connect to {node_id_hex:.8} failed: {e}"); return }
+    };
+
+    // Protocol version handshake — dial side opens the first stream.
+    match conn.open_bi().await {
+        Err(e) => { tracing::warn!("net: version handshake open_bi failed: {e}"); return }
+        Ok((mut send, mut recv)) => {
+            let hello = crate::sync_protocol::VersionHello { major: crate::sync_protocol::PROTOCOL_MAJOR };
+            if let Err(e) = write_cbor(&mut send, &hello).await {
+                tracing::warn!("net: write VersionHello failed: {e}"); return;
+            }
+            let reject: Option<crate::sync_protocol::VersionReject> = read_cbor(&mut recv).await.ok();
+            if let Some(rej) = reject {
+                if !rej.reason.is_empty() {
+                    tracing::warn!("net: peer {node_id_hex:.8} rejected version {}: {} (peer speaks {})", rej.their_major, rej.reason, rej.our_major);
+                    return;
+                }
+            }
+        }
+    }
+
+    connections.lock().unwrap().insert(node_id_hex.clone(), conn.clone());
+    let _ = event_tx.send(NetEvent::PeerConnected { peer_id: node_id_hex.clone() }).await;
+
+    // Initiate Hello + board sync.
+    let spaces = my_spaces.lock().unwrap().clone();
+    if !spaces.is_empty() {
+        let conn2 = conn.clone();
+        let storage2 = storage.clone();
+        let states2 = sync_states.clone();
+        let ev_tx2 = event_tx.clone();
+        tokio::spawn(async move {
+            initiate_hello_and_sync(&conn2, &storage2, &spaces, identity_bytes, &states2, &ev_tx2).await;
+        });
+    }
+
+    // Per-connection incoming-stream handler.
+    let spaces_arc = my_spaces.clone();
+    tokio::spawn(async move {
+        handle_incoming_streams(
+            conn, node_id_hex, storage, sync_states, spaces_arc,
+            identity_bytes, lifecycle_tx,
+        ).await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Incoming stream handler (responder role for a single connection)
+// ---------------------------------------------------------------------------
+async fn handle_incoming_streams(
+    conn: iroh::endpoint::Connection,
+    peer_id: String,
+    storage: Arc<Mutex<Storage>>,
+    sync_states: Arc<Mutex<HashMap<String, automerge::sync::State>>>,
+    my_spaces: Arc<Mutex<Vec<String>>>,
+    _identity_bytes: [u8; 32],
+    lifecycle_tx: mpsc::Sender<PeerLifecycle>,
+) {
+    let peer_pubkey: [u8; 32] = *conn.remote_id().as_bytes();
+
+    // First stream from the dialer is always a version handshake.
+    match conn.accept_bi().await {
+        Err(e) => {
+            tracing::debug!("net: version handshake stream from {peer_id:.8} closed: {e}");
+            let _ = lifecycle_tx.send(PeerLifecycle::Disconnected { node_id_hex: peer_id }).await;
+            return;
+        }
+        Ok((mut send, mut recv)) => {
+            let hello: crate::sync_protocol::VersionHello = match read_cbor(&mut recv).await {
+                Ok(h) => h,
+                Err(e) => {
+                    tracing::warn!("net: read VersionHello failed from {peer_id:.8}: {e}");
+                    let _ = lifecycle_tx.send(PeerLifecycle::Disconnected { node_id_hex: peer_id }).await;
+                    return;
+                }
+            };
+            if hello.major != crate::sync_protocol::PROTOCOL_MAJOR {
+                let reject = crate::sync_protocol::VersionReject {
+                    reason: format!("incompatible major version: we speak {}, you speak {}", crate::sync_protocol::PROTOCOL_MAJOR, hello.major),
+                    their_major: hello.major,
+                    our_major: crate::sync_protocol::PROTOCOL_MAJOR,
+                };
+                let _ = write_cbor(&mut send, &reject).await;
+                tracing::warn!("net: rejected {peer_id:.8} (speaks protocol v{}; we speak v{})", hello.major, crate::sync_protocol::PROTOCOL_MAJOR);
+                let _ = lifecycle_tx.send(PeerLifecycle::Disconnected { node_id_hex: peer_id }).await;
+                return;
+            }
+            // Send empty reject (= accepted) so the dialer can continue.
+            let ok = crate::sync_protocol::VersionReject { reason: String::new(), their_major: hello.major, our_major: crate::sync_protocol::PROTOCOL_MAJOR };
+            let _ = write_cbor(&mut send, &ok).await;
+        }
+    }
+
+    loop {
+        match conn.accept_bi().await {
+            Err(e) => {
+                tracing::debug!("net: connection from {peer_id:.8} closed: {e}");
+                break;
+            }
+            Ok((mut send, mut recv)) => {
+                let request: SyncRequest = match read_cbor(&mut recv).await {
+                    Ok(r) => r,
+                    Err(e) => { tracing::warn!("net: read request failed: {e}"); break }
+                };
+                let spaces = my_spaces.lock().unwrap().clone();
+                let response = handle_one_request(
+                    request, &peer_id, peer_pubkey, &storage, &sync_states, &spaces,
+                );
+                if let Err(e) = write_cbor(&mut send, &response).await {
+                    tracing::warn!("net: write response failed: {e}");
+                }
+            }
+        }
+    }
+    let _ = lifecycle_tx.send(PeerLifecycle::Disconnected { node_id_hex: peer_id }).await;
+}
+
+// ---------------------------------------------------------------------------
+// Initiator role: Hello + board sync for all spaces
+// ---------------------------------------------------------------------------
+async fn initiate_hello_and_sync(
+    conn: &iroh::endpoint::Connection,
     storage: &Arc<Mutex<Storage>>,
     my_spaces: &[String],
     identity_bytes: [u8; 32],
-    peer_id: PeerId,
+    sync_states: &Arc<Mutex<HashMap<String, automerge::sync::State>>>,
+    event_tx: &mpsc::Sender<NetEvent>,
 ) {
-    use crate::sync_protocol::SyncRequest;
-    use monotask_crypto::Identity;
+    let peer_id = hex::encode(conn.remote_id().as_bytes());
 
     for space_id in my_spaces {
         let (board_ids, space_doc_bytes) = {
@@ -539,61 +521,162 @@ fn initiate_hello(
                 .unwrap_or_default();
             (boards, doc_bytes)
         };
-
-        let identity = Identity::from_secret_bytes(&identity_bytes);
+        let identity = monotask_crypto::Identity::from_secret_bytes(&identity_bytes);
         let signature = identity.sign(space_id.as_bytes());
 
-        swarm.behaviour_mut().sync.send_request(
-            &peer_id,
-            SyncRequest::Hello {
-                space_id: space_id.clone(),
-                board_ids,
-                signature,
-                space_doc_bytes,
-            },
-        );
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(s) => s,
+            Err(e) => { tracing::warn!("net: open_bi (Hello) failed: {e}"); return }
+        };
+        if let Err(e) = write_cbor(&mut send, &SyncRequest::Hello {
+            space_id: space_id.clone(),
+            board_ids,
+            signature,
+            space_doc_bytes,
+        }).await {
+            tracing::warn!("net: write Hello failed: {e}");
+            return;
+        }
+
+        let response: SyncResponse = match read_cbor(&mut recv).await {
+            Ok(r) => r,
+            Err(e) => { tracing::warn!("net: read HelloAck failed: {e}"); return }
+        };
+        drop(send); drop(recv);
+
+        if let SyncResponse::HelloAck { space_id: ack_space, board_ids: their_boards, space_doc_bytes: their_doc } = response {
+            if !their_doc.is_empty() {
+                let mut guard = storage.lock().unwrap();
+                merge_space_doc(&ack_space, &their_doc, &mut guard);
+            }
+            let our_boards = storage.lock().unwrap().list_board_ids().unwrap_or_default();
+            let all_boards: std::collections::HashSet<String> =
+                our_boards.into_iter().chain(their_boards).collect();
+            for board_id in all_boards {
+                sync_board_with_peer(conn, &peer_id, &board_id, storage, sync_states, event_tx).await;
+            }
+        } else if let SyncResponse::Rejected { reason } = response {
+            tracing::warn!("net: Hello rejected by {peer_id:.8}: {reason}");
+        }
     }
 }
 
-fn handle_sync_request(
-    request: crate::sync_protocol::SyncRequest,
-    peer: PeerId,
+// ---------------------------------------------------------------------------
+// Sync one board with a peer (multi-round Automerge protocol, initiator role)
+// ---------------------------------------------------------------------------
+async fn sync_board_with_peer(
+    conn: &iroh::endpoint::Connection,
+    peer_id: &str,
+    board_id: &str,
     storage: &Arc<Mutex<Storage>>,
-    pubkey_cache: &HashMap<PeerId, libp2p::identity::PublicKey>,
+    sync_states: &Arc<Mutex<HashMap<String, automerge::sync::State>>>,
+    event_tx: &mpsc::Sender<NetEvent>,
+) {
+    use automerge::sync::SyncDoc;
+
+    // Clear stale initiator state so the peer gets the latest changes.
+    sync_states.lock().unwrap().remove(&format!("i/{peer_id}/{board_id}"));
+
+    loop {
+        let msg_bytes: Option<Vec<u8>> = {
+            let guard = storage.lock().unwrap();
+            let mut doc = match guard.load_board(board_id) {
+                Ok(d) => d,
+                Err(_) => automerge::AutoCommit::new(),
+            };
+            let mut states = sync_states.lock().unwrap();
+            let state = states
+                .entry(format!("i/{peer_id}/{board_id}"))
+                .or_insert_with(automerge::sync::State::new);
+            let encoded: Option<Vec<u8>> = doc.sync().generate_sync_message(state)
+                .map(|m| m.encode());
+            encoded
+        };
+
+        let Some(bytes) = msg_bytes else {
+            let _ = event_tx.send(NetEvent::BoardSynced {
+                board_id: board_id.to_string(), peer_id: peer_id.to_string(),
+            }).await;
+            break;
+        };
+
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(s) => s,
+            Err(e) => { tracing::warn!("net: open_bi (BoardSync) failed: {e}"); break }
+        };
+        if let Err(e) = write_cbor(&mut send, &SyncRequest::BoardSync {
+            board_id: board_id.to_string(), sync_message: bytes,
+        }).await {
+            tracing::warn!("net: write BoardSync failed: {e}"); break;
+        }
+
+        let response: SyncResponse = match read_cbor(&mut recv).await {
+            Ok(r) => r,
+            Err(e) => { tracing::warn!("net: read BoardSync response failed: {e}"); break }
+        };
+        drop(send); drop(recv);
+
+        match response {
+            SyncResponse::BoardSync { sync_message: None, .. } => {
+                let _ = event_tx.send(NetEvent::BoardSynced {
+                    board_id: board_id.to_string(), peer_id: peer_id.to_string(),
+                }).await;
+                break;
+            }
+            SyncResponse::BoardSync { sync_message: Some(reply_bytes), .. } => {
+                let sync_result = {
+                    let mut states = sync_states.lock().unwrap();
+                    let state = states
+                        .entry(format!("i/{peer_id}/{board_id}"))
+                        .or_insert_with(automerge::sync::State::new);
+                    process_incoming_sync(board_id, &reply_bytes, storage, state)
+                }; // MutexGuard dropped before any await
+                if let Err(e) = sync_result {
+                    let _ = event_tx.send(NetEvent::SyncError {
+                        board_id: board_id.to_string(), error: e.to_string(),
+                    }).await;
+                    break;
+                }
+                // Continue loop — generate next sync message.
+            }
+            SyncResponse::Rejected { reason } => {
+                tracing::warn!("net: BoardSync rejected: {reason}");
+                break;
+            }
+            _ => break,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Responder: handle one incoming SyncRequest and produce a SyncResponse
+// ---------------------------------------------------------------------------
+fn handle_one_request(
+    request: SyncRequest,
+    peer_id: &str,
+    peer_pubkey: [u8; 32],
+    storage: &Arc<Mutex<Storage>>,
+    sync_states: &Arc<Mutex<HashMap<String, automerge::sync::State>>>,
     _my_spaces: &[String],
-    sync_states: &mut HashMap<String, automerge::sync::State>,
-) -> crate::sync_protocol::SyncResponse {
-    use crate::sync_protocol::{SyncRequest, SyncResponse};
+) -> SyncResponse {
     use monotask_crypto::Identity;
 
     match request {
-        SyncRequest::Hello { space_id, board_ids: _their_board_ids, signature, space_doc_bytes } => {
-            let pubkey = match pubkey_cache.get(&peer) {
-                Some(pk) => pk,
-                None => return SyncResponse::Rejected { reason: "no pubkey cached".into() },
-            };
-            let ed_pk = match pubkey.clone().try_into_ed25519() {
-                Ok(pk) => pk,
-                Err(_) => return SyncResponse::Rejected { reason: "not ed25519".into() },
-            };
-            let pubkey_32: [u8; 32] = ed_pk.to_bytes();
-            if Identity::verify(&pubkey_32, space_id.as_bytes(), &signature).is_err() {
+        SyncRequest::Hello { space_id, board_ids: _, signature, space_doc_bytes } => {
+            // Verify signature — peer signed space_id with their ed25519 key (= their NodeId).
+            if Identity::verify(&peer_pubkey, space_id.as_bytes(), &signature).is_err() {
                 return SyncResponse::Rejected { reason: "bad signature".into() };
             }
+            let pubkey_hex = hex::encode(peer_pubkey);
 
-            let pubkey_hex = hex::encode(pubkey_32);
-
-            // Merge peer's space doc FIRST — this adds the joiner as a member if they
-            // joined via an invite token (their membership only exists in their local doc
-            // until we merge it). Then check membership on the merged state.
             let (my_board_ids, my_space_doc_bytes) = {
                 let mut guard = storage.lock().unwrap();
                 if !space_doc_bytes.is_empty() {
                     merge_space_doc(&space_id, &space_doc_bytes, &mut guard);
                 }
-
-                let is_member = monotask_storage::space::is_active_member(guard.conn(), &space_id, &pubkey_hex)
-                    .unwrap_or(false);
+                let is_member = monotask_storage::space::is_active_member(
+                    guard.conn(), &space_id, &pubkey_hex,
+                ).unwrap_or(false);
                 if !is_member {
                     return SyncResponse::Rejected { reason: "not a member".into() };
                 }
@@ -611,23 +694,39 @@ fn handle_sync_request(
         }
 
         SyncRequest::BoardSync { board_id, sync_message } => {
-            // Use "r/" prefix to keep responder state separate from initiator state.
-            let sync_state = sync_states.entry(format!("r/{peer}/{board_id}")).or_insert_with(automerge::sync::State::new);
-            eprintln!("REQ_BOARDSYNC[{board_id:.8}] from {peer}: msg_len={}", sync_message.len());
-            match process_incoming_sync(&board_id, &sync_message, storage, sync_state) {
-                Ok(reply_msg) => {
-                    eprintln!("REQ_BOARDSYNC[{board_id:.8}]: reply_is_some={}", reply_msg.is_some());
-                    SyncResponse::BoardSync { board_id, sync_message: reply_msg }
-                }
-                Err(e) => {
-                    eprintln!("REQ_BOARDSYNC[{board_id:.8}]: ERROR → Rejected: {e}");
-                    SyncResponse::Rejected { reason: e.to_string() }
+            let mut states = sync_states.lock().unwrap();
+            let state = states
+                .entry(format!("r/{peer_id}/{board_id}"))
+                .or_insert_with(automerge::sync::State::new);
+            match process_incoming_sync(&board_id, &sync_message, storage, state) {
+                Ok(reply) => SyncResponse::BoardSync { board_id, sync_message: reply },
+                Err(e) => SyncResponse::Rejected { reason: e.to_string() },
+            }
+        }
+
+        SyncRequest::Presence { pubkey, status, display_name } => {
+            // Update presence in space_members for this peer across all spaces they belong to.
+            if let Ok(guard) = storage.lock() {
+                let _ = guard.conn().execute(
+                    "UPDATE space_members SET presence = ?1 WHERE pubkey = ?2",
+                    rusqlite::params![status, pubkey],
+                );
+                if !display_name.is_empty() {
+                    let _ = guard.conn().execute(
+                        "UPDATE space_members SET display_name = ?1 WHERE pubkey = ?2 AND (display_name IS NULL OR display_name = '')",
+                        rusqlite::params![display_name, pubkey],
+                    );
                 }
             }
+            // No response needed for presence — return a no-op BoardSync
+            SyncResponse::BoardSync { board_id: String::new(), sync_message: None }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Automerge sync helper (unchanged from libp2p version)
+// ---------------------------------------------------------------------------
 fn process_incoming_sync(
     board_id: &str,
     sync_message: &[u8],
@@ -640,137 +739,121 @@ fn process_incoming_sync(
     let msg = am_sync::Message::decode(sync_message)
         .map_err(|e| crate::NetError::Sync(e.to_string()))?;
 
-    // Hold the lock across load → apply → save to prevent a concurrent sync
-    // from loading a stale snapshot and overwriting a more-recent save.
     let mut guard = storage.lock().unwrap();
     let mut doc = match guard.load_board(board_id) {
         Ok(d) => d,
-        // Unknown board: start from a truly empty doc so the peer's full
-        // history merges in without conflicting put_object operations.
         Err(_) => AutoCommit::new(),
     };
 
-    let heads_before = doc.get_heads();
-    let doc_bytes_before = doc.save().len();
-
-    doc.sync().receive_sync_message(sync_state, msg)
+    doc.sync()
+        .receive_sync_message(sync_state, msg)
         .map_err(|e| crate::NetError::Sync(e.to_string()))?;
 
-    let heads_after = doc.get_heads();
-    let doc_bytes_after = doc.save().len();
-    eprintln!(
-        "SYNC[{board_id:.8}]: heads_changed={} bytes_before={doc_bytes_before} bytes_after={doc_bytes_after}",
-        heads_before != heads_after
-    );
-
-    // Always persist after receiving a sync message so the card_number_index
-    // stays consistent with the doc state. If heads_changed=false the doc is
-    // unchanged but the index may be stale from a prior run, so rebuild it.
     guard.save_board(board_id, &mut doc)
         .map_err(crate::NetError::Storage)?;
-    eprintln!("SYNC[{board_id:.8}]: saved board ({doc_bytes_after} bytes, heads_changed={})", heads_before != heads_after);
     drop(guard);
 
-    let reply = doc.sync().generate_sync_message(sync_state);
-    eprintln!("SYNC[{board_id:.8}]: reply_is_some={}", reply.is_some());
-
-    Ok(reply.map(|m| m.encode()))
+    let encoded: Option<Vec<u8>> = doc.sync().generate_sync_message(sync_state)
+        .map(|m| m.encode());
+    Ok(encoded)
 }
 
-/// Merge the peer's Automerge space doc into our local copy, then update the SQL
-/// tables (name, space_members, space_boards) to reflect the merged state.
-fn merge_space_doc(space_id: &str, peer_doc_bytes: &[u8], guard: &mut Storage) {
+// ---------------------------------------------------------------------------
+// Space doc merge (unchanged from libp2p version)
+// ---------------------------------------------------------------------------
+pub(crate) fn merge_space_doc(space_id: &str, peer_doc_bytes: &[u8], guard: &mut Storage) {
     use automerge::AutoCommit;
     use monotask_storage::space as ss;
     use monotask_core::space as cs;
 
     let our_bytes = match ss::load_space_doc(guard.conn(), space_id) {
         Ok(b) => b,
-        Err(_) => return,  // space not in DB, skip
+        Err(_) => return,
     };
-
     let mut our_doc = if our_bytes.is_empty() {
         AutoCommit::new()
     } else {
         match AutoCommit::load(&our_bytes) {
             Ok(d) => d,
-            Err(e) => { eprintln!("SPACE_SYNC: failed to load our doc: {e}"); return; }
+            Err(e) => { eprintln!("SPACE_SYNC: failed to load our doc: {e}"); return }
         }
     };
-
     let mut their_doc = match AutoCommit::load(peer_doc_bytes) {
         Ok(d) => d,
-        Err(e) => { eprintln!("SPACE_SYNC: failed to load peer doc: {e}"); return; }
+        Err(e) => { eprintln!("SPACE_SYNC: failed to load peer doc: {e}"); return }
     };
-
     if let Err(e) = our_doc.merge(&mut their_doc) {
         eprintln!("SPACE_SYNC: merge error: {e}"); return;
     }
-
-    // Save merged doc bytes.
     let merged_bytes = our_doc.save();
     let _ = ss::update_space_doc(guard.conn(), space_id, &merged_bytes);
-
-    // Sync space name.
     if let Some(name) = cs::get_space_name(&our_doc) {
         let _ = ss::rename_space(guard.conn(), space_id, &name);
     }
-
-    // Sync members.
     if let Ok(members) = cs::list_members(&our_doc) {
         for m in members {
             let _ = ss::upsert_member(guard.conn(), space_id, &monotask_core::space::Member {
-                pubkey: m.pubkey,
-                display_name: m.display_name,
-                avatar_blob: m.avatar_blob,
-                bio: m.bio,
-                role: m.role,
-                color_accent: m.color_accent,
-                presence: m.presence,
-                kicked: m.kicked,
+                pubkey: m.pubkey, display_name: m.display_name,
+                avatar_blob: m.avatar_blob, bio: m.bio, role: m.role,
+                color_accent: m.color_accent, presence: m.presence, kicked: m.kicked,
             });
         }
     }
-
-    // Sync boards (add any boards referenced in the space doc but not yet in space_boards).
     if let Ok(board_refs) = cs::list_board_refs(&our_doc) {
         for board_id in board_refs {
             let _ = ss::add_board(guard.conn(), space_id, &board_id);
         }
     }
-
-    eprintln!("SPACE_SYNC[{space_id:.8}]: merged and saved");
 }
 
-async fn handle_sync_response(
-    response: crate::sync_protocol::SyncResponse,
-    peer: PeerId,
-    storage: &Arc<Mutex<Storage>>,
-    event_tx: &mpsc::Sender<NetEvent>,
-    sync_states: &mut HashMap<String, automerge::sync::State>,
-) {
-    use crate::sync_protocol::SyncResponse;
-    match response {
-        SyncResponse::HelloAck { space_id: _, board_ids: their_board_ids, .. } => {
-            tracing::debug!(
-                "net: HelloAck from {} boards={}",
-                peer, their_board_ids.len()
-            );
-        }
-        SyncResponse::BoardSync { board_id, sync_message: Some(msg) } => {
-            let sync_state = sync_states.entry(board_id.clone()).or_insert_with(automerge::sync::State::new);
-            if let Err(e) = process_incoming_sync(&board_id, &msg, storage, sync_state) {
-                let _ = event_tx.send(NetEvent::SyncError { board_id, error: e.to_string() }).await;
-            } else {
-                let _ = event_tx.send(NetEvent::BoardSynced { board_id, peer_id: peer.to_string() }).await;
-            }
-        }
-        SyncResponse::BoardSync { board_id: _, sync_message: None } => {
-            tracing::debug!("net: peer {} converged", peer);
-        }
-        SyncResponse::Rejected { reason } => {
-            eprintln!("REJECTED by {peer}: {reason}");
-            tracing::warn!("net: rejected by {}: {reason}", peer);
-        }
+// ---------------------------------------------------------------------------
+// Peer address parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a hex EndpointId string (32 bytes, 64 hex chars).
+fn parse_node_id(hex_str: &str) -> Result<EndpointId, ()> {
+    let bytes = hex::decode(hex_str).map_err(|_| ())?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| ())?;
+    EndpointId::from_bytes(&arr).map_err(|_| ())
+}
+
+/// Parse a peer address string into an iroh `EndpointAddr`.
+///
+/// Formats accepted:
+/// - `<64-hex-chars>` — EndpointId only, relay will be used
+/// - `<64-hex-chars>@<ip>:<port>` — EndpointId + direct UDP hint
+pub fn parse_peer_addr(s: &str) -> Option<EndpointAddr> {
+    if let Some((id_part, addr_part)) = s.split_once('@') {
+        let node_id = parse_node_id(id_part).ok()?;
+        let sock: std::net::SocketAddr = addr_part.parse().ok()?;
+        Some(EndpointAddr::new(node_id).with_ip_addr(sock))
+    } else {
+        let node_id = parse_node_id(s).ok()?;
+        Some(EndpointAddr::new(node_id))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Saved-peers persistence (replaces saved_peers.txt / multiaddr format)
+// ---------------------------------------------------------------------------
+fn saved_peers_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("saved_peers_iroh.txt")
+}
+
+fn load_saved_peers(data_dir: &std::path::Path) -> Vec<String> {
+    let path = saved_peers_path(data_dir);
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect()
+}
+
+fn save_peer_addr(data_dir: &std::path::Path, addr: &str) {
+    let path = saved_peers_path(data_dir);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+        let _ = writeln!(f, "{}", addr);
     }
 }

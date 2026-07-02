@@ -20,19 +20,22 @@ impl OutlookClient {
             .format("%Y-%m-%dT%H:%M:%SZ")
             .to_string();
 
-        let filter = format!("receivedDateTime ge {since}");
-        let url = format!(
-            "https://graph.microsoft.com/v1.0/me/messages?\
-             $select=id,internetMessageId,from,subject,receivedDateTime,bodyPreview\
-             &$top=200&$filter={filter}&$orderby=receivedDateTime+desc"
-        );
-
         let resp: serde_json::Value = self.http
-            .get(&url)
+            .get("https://graph.microsoft.com/v1.0/me/messages")
             .bearer_auth(&self.token)
             .header("Accept", "application/json")
+            .query(&[
+                ("$select", "id,internetMessageId,from,subject,receivedDateTime,bodyPreview"),
+                ("$top", "200"),
+                ("$filter", &format!("receivedDateTime ge {since}")),
+                ("$orderby", "receivedDateTime desc"),
+            ])
             .send().await?
             .json().await?;
+
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("Microsoft Graph API error: {}", err);
+        }
 
         let items = resp["value"].as_array()
             .cloned()

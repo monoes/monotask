@@ -1356,6 +1356,7 @@
             </button>
           </div>
         </div>
+        <button id="btn-refresh-board" title="Refresh board" onclick="refreshCurrentView()" style="background:none;border:1px solid #2a2a3a;color:#666;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;" onmouseenter="this.style.color='#ccc';this.style.borderColor='#3a3a5a'" onmouseleave="this.style.color='#666';this.style.borderColor='#2a2a3a'">&#8635;</button>
         <div style="display:flex;gap:4px;margin-left:auto;background:#0d0d1c;border:1px solid #1e1e3a;border-radius:6px;padding:2px;">
           <button id="btn-view-kanban" onclick="setBoardViewMode('kanban')" title="Kanban view" style="background:#1e1e3a;border:none;color:#e0e0f0;padding:4px 9px;border-radius:4px;cursor:pointer;font-size:13px;">⊞</button>
           <button id="btn-view-list" onclick="setBoardViewMode('list')" title="List view" style="background:none;border:none;color:#888;padding:4px 9px;border-radius:4px;cursor:pointer;font-size:13px;">☰</button>
@@ -2418,6 +2419,17 @@
       li.classList.toggle('active', li.dataset.boardId === boardId);
     });
     await loadBoardColumns(boardId);
+  }
+
+  async function refreshCurrentView() {
+    const btn = document.getElementById('btn-refresh-board');
+    if (btn) { btn.style.opacity = '0.4'; btn.style.pointerEvents = 'none'; }
+    try {
+      await loadSpacesSidebar();
+      if (currentBoardId) await loadBoardColumns(currentBoardId);
+    } finally {
+      if (btn) { btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+    }
   }
 
   async function exportBoard() {
@@ -6271,6 +6283,17 @@
     // On peer connect/disconnect, refresh sync status display
     listen('peer-connected', () => { pollSyncStatus().catch(() => {}); }).catch(() => {});
     listen('peer-disconnected', () => { pollSyncStatus().catch(() => {}); }).catch(() => {});
+    // Handle monotask:// deep links forwarded from the Rust layer
+    listen('monotask://open', (e) => {
+      const url = e.payload;
+      const boardMatch = url.match(/^monotask:\/\/board\/([^/?#]+)/);
+      const cardMatch  = url.match(/^monotask:\/\/board\/([^/?#]+)\/card\/([^/?#]+)/);
+      if (cardMatch) {
+        openBoard(cardMatch[1]).then(() => openCardDetail(cardMatch[2])).catch(() => {});
+      } else if (boardMatch) {
+        openBoard(boardMatch[1]).catch(() => {});
+      }
+    }).catch(() => {});
   }
 
   // ── GitHub Integrations ────────────────────────────────────────────────────

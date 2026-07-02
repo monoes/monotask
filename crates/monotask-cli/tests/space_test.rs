@@ -7,11 +7,11 @@
 use std::process::Command;
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_app-cli"))
+    Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
         .args(["--data-dir", dir.to_str().unwrap()])
         .args(args)
         .output()
-        .expect("failed to run app-cli")
+        .expect("failed to run monotaskcli")
 }
 
 fn stdout(out: &std::process::Output) -> String {
@@ -197,9 +197,12 @@ fn space_invite_generate_twice_both_succeed() {
 fn space_boards_add_and_list() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Create a real board first so the board ID exists
+    let create_out = stdout(&cli(tmp.path(), &["space", "create", "BoardsSpace"]));
+    let space_id = extract_space_id(&create_out);
+
+    // Create a real board in this space so the board ID exists
     let board_out = String::from_utf8_lossy(
-        &cli(tmp.path(), &["board", "create", "BoardForSpace", "--json"]).stdout,
+        &cli(tmp.path(), &["board", "create", "BoardForSpace", "--space", &space_id, "--json"]).stdout,
     )
     .trim()
     .to_string();
@@ -207,7 +210,8 @@ fn space_boards_add_and_list() {
         serde_json::from_str(&board_out).expect("board create should return JSON");
     let board_id = board_val["id"].as_str().unwrap().to_string();
 
-    let create_out = stdout(&cli(tmp.path(), &["space", "create", "BoardsSpace"]));
+    // space_id already set above — re-bind so the rest of the test works unchanged
+    let create_out = format!("Created Space: BoardsSpace ({space_id})");
     let space_id = extract_space_id(&create_out);
 
     // Add the board
@@ -310,9 +314,13 @@ fn space_invite_revoke_succeeds() {
 fn space_info_shows_added_board() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Create a board
+    // Create space first so we can pass --space to board create
+    let create_out = stdout(&cli(tmp.path(), &["space", "create", "InfoWithBoard"]));
+    let space_id = extract_space_id(&create_out);
+
+    // Create a board inside this space
     let board_json = String::from_utf8_lossy(
-        &cli(tmp.path(), &["board", "create", "InfoBoardSpace", "--json"]).stdout,
+        &cli(tmp.path(), &["board", "create", "InfoBoardSpace", "--space", &space_id, "--json"]).stdout,
     )
     .trim()
     .to_string();
@@ -320,8 +328,8 @@ fn space_info_shows_added_board() {
         serde_json::from_str(&board_json).expect("board create should return JSON");
     let board_id = board_val["id"].as_str().unwrap().to_string();
 
-    // Create space and add the board
-    let create_out = stdout(&cli(tmp.path(), &["space", "create", "InfoWithBoard"]));
+    // Re-bind create_out/space_id with real space (already set above)
+    let create_out = format!("Created Space: InfoWithBoard ({space_id})");
     let space_id = extract_space_id(&create_out);
     stdout(&cli(tmp.path(), &["space", "boards", "add", &space_id, &board_id]));
 

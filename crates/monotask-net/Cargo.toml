@@ -1,15 +1,10 @@
 [package]
 name = "monotask-net"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2021"
 
 [dependencies]
-libp2p = { version = "0.53", features = [
-    "tcp", "quic", "noise", "yamux",
-    "mdns", "kad", "relay", "dcutr", "autonat",
-    "request-response", "identify",
-    "tokio", "macros",
-] }
+iroh             = "1.0"
 monotask-core    = { path = "../monotask-core" }
 monotask-crypto  = { path = "../monotask-crypto" }
 monotask-storage = { path = "../monotask-storage" }
@@ -21,7 +16,7 @@ tracing     = { workspace = true }
 tokio       = { workspace = true }
 serde       = { workspace = true }
 ciborium    = { workspace = true }
-async-trait = "0.1"
+rusqlite    = { workspace = true }
 
 [dev-dependencies]
 tempfile    = { workspace = true }

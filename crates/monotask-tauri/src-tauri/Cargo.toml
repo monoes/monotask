@@ -20,7 +20,8 @@ monotask-crypto  = { path = "../../monotask-crypto" }
 monotask-storage = { path = "../../monotask-storage" }
 monotask-net     = { path = "../../monotask-net" }
 tauri          = { version = "2", features = [] }
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog    = "2"
+tauri-plugin-deep-link = "2"
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }

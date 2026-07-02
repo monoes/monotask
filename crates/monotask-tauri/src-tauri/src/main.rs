@@ -233,6 +233,36 @@ fn push_undo(conn: &rusqlite::Connection, board_id: &str, actor_key: &str, actio
     );
 }
 
+/// Scan `text` for `@<pubkey-prefix>` patterns and upsert rows into `mention_index`.
+/// `mentioned_by` is the local actor's pubkey hex.
+fn index_mentions(conn: &rusqlite::Connection, board_id: &str, card_id: &str, text: &str, mentioned_by: &str) {
+    let hlc = monotask_core::clock::now();
+    // Simple @word tokeniser: anything after @ until whitespace or end
+    let mut i = 0;
+    let bytes = text.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'@' {
+            let start = i + 1;
+            let end = bytes[start..].iter().position(|&b| b == b' ' || b == b'\n' || b == b'\t')
+                .map(|p| start + p)
+                .unwrap_or(bytes.len());
+            if end > start {
+                let mentioned = &text[start..end];
+                if !mentioned.is_empty() {
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO mention_index (board_id, card_id, mentioned, mentioned_by, context, seen, hlc)
+                         VALUES (?1, ?2, ?3, ?4, 'description', 0, ?5)",
+                        rusqlite::params![board_id, card_id, mentioned, mentioned_by, hlc],
+                    );
+                }
+            }
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+}
+
 fn get_or_create_chat_doc(
     storage: &monotask_storage::Storage,
     space_id: &str,
@@ -1438,6 +1468,60 @@ fn remove_prerequisite_cmd(
 }
 
 #[tauri::command]
+fn add_card_link_cmd(
+    board_id: String,
+    card_id: String,
+    target_board_id: String,
+    target_card_id: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::card::add_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)
+        .map_err(|e| e.to_string())?;
+    monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
+        .map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_card_link_cmd(
+    board_id: String,
+    card_id: String,
+    target_board_id: String,
+    target_card_id: String,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let mut doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    monotask_core::card::remove_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)
+        .map_err(|e| e.to_string())?;
+    monotask_storage::board::save_board(storage.conn(), &board_id, &mut doc)
+        .map_err(|e| e.to_string())?;
+    trigger_board_sync(&board_id, &state);
+    Ok(())
+}
+
+#[tauri::command]
+fn list_card_links_cmd(
+    board_id: String,
+    card_id: String,
+    state: tauri::State<AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let storage = state.storage.lock().map_err(|e| e.to_string())?;
+    let doc = monotask_storage::board::load_board(storage.conn(), &board_id)
+        .map_err(|e| e.to_string())?;
+    let links = monotask_core::card::list_card_links(&doc, &card_id)
+        .map_err(|e| e.to_string())?;
+    Ok(links.into_iter()
+        .map(|(bid, cid)| serde_json::json!({"board_id": bid, "card_id": cid}))
+        .collect())
+}
+
+#[tauri::command]
 fn update_card_cmd(
     board_id: String,
     card_id: String,
@@ -1486,6 +1570,8 @@ fn update_card_cmd(
         "UPDATE card_search_index SET title = ?1 WHERE card_id = ?2",
         rusqlite::params![title, card_id],
     );
+    // Scan description for @mentions and write to mention_index
+    index_mentions(storage.conn(), &board_id, &card_id, &description, &state.identity.public_key_hex());
     trigger_board_sync(&board_id, &state);
     Ok(())
 }
@@ -1888,6 +1974,7 @@ fn get_space_cmd(space_id: String, state: tauri::State<AppState>) -> Result<Spac
 }
 
 /// Embed the current swarm listen addresses into the space doc so invitees can auto-connect.
+#[allow(dead_code)]
 fn embed_listen_addrs_in_doc(state: &AppState, space_id: &str) -> Result<Vec<u8>, String> {
     let listen_addrs = {
         let net = state.net.lock().map_err(|e| e.to_string())?;
@@ -2853,7 +2940,19 @@ fn find_card_board_cmd(space_id: String, card_id: String, state: tauri::State<Ap
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            // Forward deep link URLs to the frontend as a "monotask://open" event
+            {
+                use tauri::{Emitter, Listener};
+                let app_handle = app.handle().clone();
+                app.listen("deep-link://new-url", move |event| {
+                    let urls: Vec<String> = serde_json::from_str(event.payload()).unwrap_or_default();
+                    for url in urls {
+                        let _ = app_handle.emit("monotask://open", &url);
+                    }
+                });
+            }
             // Use the same data directory as the CLI so they share one database.
             // CLI uses dirs::data_dir().join("p2p-kanban").
             let base_data_dir = dirs::data_dir().expect("failed to resolve data dir");
@@ -3044,6 +3143,9 @@ fn main() {
             add_subtask_cmd,
             add_prerequisite_cmd,
             remove_prerequisite_cmd,
+            add_card_link_cmd,
+            remove_card_link_cmd,
+            list_card_links_cmd,
             get_github_token_status_cmd,
             set_github_token_cmd,
             get_github_board_status_cmd,

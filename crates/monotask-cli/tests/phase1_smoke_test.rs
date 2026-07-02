@@ -6,16 +6,28 @@
 use std::process::Command;
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_app-cli"))
+    Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
         .args(["--data-dir", dir.to_str().unwrap()])
         .args(args)
         .output()
-        .expect("failed to run app-cli")
+        .expect("failed to run monotaskcli")
 }
 
 fn json(out: &std::process::Output) -> serde_json::Value {
     assert!(out.status.success(), "CLI failed: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("invalid JSON from CLI")
+}
+
+fn make_space(dir: &std::path::Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
+        .args(["--data-dir", dir.to_str().unwrap()])
+        .args(["space", "create", "TestSpace"])
+        .output()
+        .expect("failed to create space");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text.rfind('(').expect("no '(' in space create output");
+    let end = text.rfind(')').expect("no ')' in space create output");
+    text[start + 1..end].trim().to_string()
 }
 
 #[test]
@@ -24,7 +36,8 @@ fn phase1_full_flow() {
     let t = tmp.path();
 
     // Setup: board + column
-    let board_id = json(&cli(t, &["board", "create", "Phase1Board", "--json"]))["id"]
+    let sid = make_space(t);
+    let board_id = json(&cli(t, &["board", "create", "Phase1Board", "--space", &sid, "--json"]))["id"]
         .as_str().unwrap().to_string();
     let col_id = json(&cli(t, &["column", "create", &board_id, "Backlog", "--json"]))["id"]
         .as_str().unwrap().to_string();

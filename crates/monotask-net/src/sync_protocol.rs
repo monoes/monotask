@@ -1,15 +1,44 @@
 use std::io;
-use libp2p::request_response;
-use libp2p::swarm::StreamProtocol;
-use libp2p::futures;
 use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_NAME: &str = "/monotask/board-sync/1.0.0";
+/// ALPN identifier for the Automerge board-sync protocol over iroh QUIC.
+pub const PROTOCOL_ALPN: &[u8] = b"/monotask/board-sync/1.0.0";
+
+/// Increment the major version when making a breaking change to `SyncRequest` or `SyncResponse`.
+/// Peers with different major versions will refuse to sync and log a `VersionReject` event.
+pub const PROTOCOL_MAJOR: u16 = 1;
 
 const MAX_MSG_SIZE: u32 = 10 * 1024 * 1024; // 10 MB
 
+/// Sent as the very first frame on every new connection (before any `SyncRequest`).
+/// If the remote's `major` differs from `PROTOCOL_MAJOR`, the recipient sends
+/// a `VersionReject` and closes the stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionHello {
+    pub major: u16,
+}
+
+/// Sent by the acceptor when `VersionHello.major != PROTOCOL_MAJOR`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionReject {
+    pub reason: String,
+    pub their_major: u16,
+    pub our_major: u16,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SyncRequest {
+    /// Ephemeral peer presence heartbeat. Sent periodically to all connected peers.
+    /// Recipients update the `presence` field in `space_members` in storage.
+    Presence {
+        /// The sender's pubkey hex (redundant but avoids a separate lookup).
+        pubkey: String,
+        /// "online" | "away" | "busy"
+        status: String,
+        /// The sender's current display name (may be empty).
+        display_name: String,
+    },
     /// Prove Space membership and share which boards this peer has.
     Hello {
         space_id: String,
@@ -47,87 +76,39 @@ pub enum SyncResponse {
     Rejected { reason: String },
 }
 
-/// CBOR codec for request_response::Behaviour.
-#[derive(Debug, Clone, Default)]
-pub struct MonotaskCodec;
-
-#[async_trait::async_trait]
-impl request_response::Codec for MonotaskCodec {
-    type Protocol = StreamProtocol;
-    type Request  = SyncRequest;
-    type Response = SyncResponse;
-
-    async fn read_request<T>(&mut self, _: &StreamProtocol, io: &mut T)
-        -> io::Result<SyncRequest>
-    where T: futures::AsyncRead + Unpin + Send
-    {
-        use futures::AsyncReadExt;
-        let len = read_u32(io).await?;
-        if len > MAX_MSG_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("message too large: {} bytes (max {})", len, MAX_MSG_SIZE),
-            ));
-        }
-        let mut buf = vec![0u8; len as usize];
-        io.read_exact(&mut buf).await?;
-        ciborium::from_reader(buf.as_slice())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
-    }
-
-    async fn read_response<T>(&mut self, _: &StreamProtocol, io: &mut T)
-        -> io::Result<SyncResponse>
-    where T: futures::AsyncRead + Unpin + Send
-    {
-        use futures::AsyncReadExt;
-        let len = read_u32(io).await?;
-        if len > MAX_MSG_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("message too large: {} bytes (max {})", len, MAX_MSG_SIZE),
-            ));
-        }
-        let mut buf = vec![0u8; len as usize];
-        io.read_exact(&mut buf).await?;
-        ciborium::from_reader(buf.as_slice())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
-    }
-
-    async fn write_request<T>(&mut self, _: &StreamProtocol, io: &mut T, req: SyncRequest)
-        -> io::Result<()>
-    where T: futures::AsyncWrite + Unpin + Send
-    {
-        use futures::AsyncWriteExt;
-        let mut buf = Vec::new();
-        ciborium::into_writer(&req, &mut buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        write_u32(io, buf.len() as u32).await?;
-        io.write_all(&buf).await
-    }
-
-    async fn write_response<T>(&mut self, _: &StreamProtocol, io: &mut T, res: SyncResponse)
-        -> io::Result<()>
-    where T: futures::AsyncWrite + Unpin + Send
-    {
-        use futures::AsyncWriteExt;
-        let mut buf = Vec::new();
-        ciborium::into_writer(&res, &mut buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        write_u32(io, buf.len() as u32).await?;
-        io.write_all(&buf).await
-    }
+/// Write a length-prefixed CBOR-encoded value to an async writer.
+pub async fn write_cbor<T, W>(writer: &mut W, msg: &T) -> io::Result<()>
+where
+    T: Serialize,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = Vec::new();
+    ciborium::into_writer(msg, &mut buf)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let len = buf.len() as u32;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(&buf).await
 }
 
-async fn read_u32<T: futures::AsyncRead + Unpin>(io: &mut T) -> io::Result<u32> {
-    use futures::AsyncReadExt;
-    let mut buf = [0u8; 4];
-    io.read_exact(&mut buf).await?;
-    Ok(u32::from_be_bytes(buf))
-}
-
-async fn write_u32<T: futures::AsyncWrite + Unpin>(io: &mut T, v: u32) -> io::Result<()> {
-    use futures::AsyncWriteExt;
-    io.write_all(&v.to_be_bytes()).await
+/// Read a length-prefixed CBOR-encoded value from an async reader.
+pub async fn read_cbor<T, R>(reader: &mut R) -> io::Result<T>
+where
+    T: for<'de> Deserialize<'de>,
+    R: AsyncRead + Unpin,
+{
+    let mut len_buf = [0u8; 4];
+    reader.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf);
+    if len > MAX_MSG_SIZE {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("message too large: {} bytes (max {})", len, MAX_MSG_SIZE),
+        ));
+    }
+    let mut buf = vec![0u8; len as usize];
+    reader.read_exact(&mut buf).await?;
+    ciborium::from_reader(buf.as_slice())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
 }
 
 #[cfg(test)]

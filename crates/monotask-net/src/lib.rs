@@ -11,8 +11,8 @@ use monotask_storage::Storage;
 
 #[derive(Debug, Error)]
 pub enum NetError {
-    #[error("libp2p error: {0}")]
-    Libp2p(String),
+    #[error("transport error: {0}")]
+    Transport(String),
     #[error("storage error: {0}")]
     Storage(#[from] monotask_storage::StorageError),
     #[error("sync error: {0}")]
@@ -30,8 +30,8 @@ pub struct NetConfig {
     pub listen_port: u16,
     /// Data directory — port is saved here as `net.port` after bind.
     pub data_dir: PathBuf,
-    /// Optional list of peer multiaddrs to dial at startup (bypasses mDNS).
-    /// Format: `/ip4/1.2.3.4/tcp/7272` or `/ip4/1.2.3.4/udp/7272/quic-v1`.
+    /// Optional list of peer addresses to dial at startup.
+    /// Format: `<64-hex-node-id>` (relay) or `<64-hex-node-id>@<ip>:<port>` (direct).
     pub bootstrap_peers: Vec<String>,
 }
 
@@ -174,15 +174,12 @@ impl NetworkHandle {
         rx.blocking_recv().unwrap_or_default()
     }
 
-    /// Compute the local libp2p PeerId from the identity seed.
+    /// Return the local iroh EndpointId (= ed25519 public key) as a hex string.
+    ///
+    /// This is the peer identifier used in `NetEvent::PeerConnected` / `PeerDisconnected`.
     pub fn peer_id_from_identity(identity_bytes: [u8; 32]) -> String {
-        let mut key_bytes = identity_bytes;
-        let Ok(secret) = libp2p::identity::ed25519::SecretKey::try_from_bytes(&mut key_bytes) else {
-            return String::new();
-        };
-        let ed_kp = libp2p::identity::ed25519::Keypair::from(secret);
-        let keypair = libp2p::identity::Keypair::from(ed_kp);
-        libp2p::PeerId::from_public_key(&keypair.public()).to_string()
+        let secret = iroh::SecretKey::from_bytes(&identity_bytes);
+        hex::encode(secret.public().as_bytes())
     }
 }
 

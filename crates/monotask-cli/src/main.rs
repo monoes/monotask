@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "monotask", about = "Monotask – P2P task manager CLI")]
+#[command(name = "monotaskcli", about = "Monotask – P2P task manager CLI")]
 struct Cli {
     #[arg(long, global = true, help = "Data directory")]
     data_dir: Option<std::path::PathBuf>,
@@ -68,6 +68,16 @@ enum Commands {
         #[command(subcommand)]
         cmd: FieldCommands,
     },
+    /// Open a monotask:// deep link in the desktop app
+    App {
+        #[command(subcommand)]
+        cmd: AppCommands,
+    },
+    /// Space chat — send and list messages in a space chat thread
+    Chat {
+        #[command(subcommand)]
+        cmd: ChatCommands,
+    },
     /// Start P2P sync daemon
     Sync {
         /// Run in background (writes PID to data dir)
@@ -94,7 +104,7 @@ enum Commands {
 enum BoardCommands {
     /// Create a new board inside a space. Boards must belong to a space.
     ///
-    /// SPACE_ID is required. Run `monotask space list` to see your spaces.
+    /// SPACE_ID is required. Run `monotaskcli space list` to see your spaces.
     Create {
         title: String,
         /// Space the board belongs to (required)
@@ -118,6 +128,10 @@ enum BoardCommands {
     },
     /// Show board schema: columns and custom field definitions
     Schema { board_id: String, #[arg(long)] json: bool },
+    /// Undo the most recent mutation on a board (restores previous snapshot)
+    Undo { board_id: String, #[arg(long)] json: bool },
+    /// Redo the most recently undone mutation on a board
+    Redo { board_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
@@ -211,6 +225,17 @@ enum CardCommands {
         #[command(subcommand)]
         cmd: SubtaskCommands,
     },
+    /// Link management (card-to-card references)
+    Link {
+        #[command(subcommand)]
+        cmd: LinkCommands,
+    },
+    /// List @mentions found in a card's description
+    Mentions {
+        board_id: String,
+        card_id: String,
+        #[arg(long)] json: bool,
+    },
     /// Prerequisite management
     Prerequisite {
         #[command(subcommand)]
@@ -291,6 +316,33 @@ enum PrerequisiteCommands {
         card_id: String,
         prereq_board_id: String,
         prereq_card_id: String,
+        #[arg(long)] json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum LinkCommands {
+    /// Add a card-to-card link
+    Add {
+        board_id: String,
+        card_id: String,
+        /// Board containing the target card
+        target_board_id: String,
+        target_card_id: String,
+        #[arg(long)] json: bool,
+    },
+    /// List all card links on a card
+    List {
+        board_id: String,
+        card_id: String,
+        #[arg(long)] json: bool,
+    },
+    /// Remove a card-to-card link
+    Remove {
+        board_id: String,
+        card_id: String,
+        target_board_id: String,
+        target_card_id: String,
         #[arg(long)] json: bool,
     },
 }
@@ -561,9 +613,18 @@ enum MailCommands {
     /// Link a board to receive email contacts
     Link {
         board_id: String,
-        /// Provider(s) to sync: gmail | outlook | both
+        /// Provider(s) to sync: gmail | outlook | imap | both
         #[arg(long, default_value = "both")]
         provider: String,
+        /// Google OAuth2 Client ID (required for Gmail)
+        #[arg(long)]
+        gmail_client_id: Option<String>,
+        /// Azure OAuth2 Client ID (required for Outlook)
+        #[arg(long)]
+        outlook_client_id: Option<String>,
+        /// Azure tenant ID (default: common)
+        #[arg(long)]
+        tenant_id: Option<String>,
         /// Column ID for new contacts (defaults to first column)
         #[arg(long)]
         inbox_col: Option<String>,
@@ -657,6 +718,34 @@ enum FieldCommands {
     },
 }
 
+#[derive(Subcommand)]
+enum AppCommands {
+    /// Open a monotask:// URL in the desktop app (board or card deep link)
+    Open {
+        /// URL to open, e.g. monotask://board/<id> or monotask://board/<id>/card/<id>
+        url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ChatCommands {
+    /// Send a chat message to a space
+    Send {
+        space_id: String,
+        /// Message text
+        text: String,
+        #[arg(long)] json: bool,
+    },
+    /// List recent chat messages in a space
+    List {
+        space_id: String,
+        /// Maximum number of messages to return (default: 50)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)] json: bool,
+    },
+}
+
 fn data_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
     if let Some(d) = &cli.data_dir {
         return Ok(d.clone());
@@ -723,7 +812,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init => {
-            println!("Initialized monotask at {}", dir.display());
+            println!("Initialized monotaskcli at {}", dir.display());
         }
         Commands::Board { cmd } => match cmd {
             BoardCommands::Create { title, space, json } => {
@@ -733,7 +822,7 @@ async fn main() -> anyhow::Result<()> {
                 let (mut doc, board) = monotask_core::board::create_board(&title, &id.public_key_hex())?;
                 storage.save_board(&board.id, &mut doc)?;
                 let space_bytes = ss::load_space_doc(storage.conn(), &space)
-                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotask space list` to see available spaces.", space))?;
+                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotaskcli space list` to see available spaces.", space))?;
                 let mut space_doc = automerge::AutoCommit::load(&space_bytes)?;
                 cs::add_board_ref(&mut space_doc, &board.id)?;
                 ss::update_space_doc(storage.conn(), &space, &space_doc.save())?;
@@ -777,7 +866,7 @@ async fn main() -> anyhow::Result<()> {
                 use monotask_core::space as cs;
                 use monotask_storage::space as ss;
                 let space_bytes = ss::load_space_doc(storage.conn(), &space)
-                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotask space list` to see available spaces.", space))?;
+                    .map_err(|_| anyhow::anyhow!("Space '{}' not found. Run `monotaskcli space list` to see available spaces.", space))?;
                 let mut space_doc = automerge::AutoCommit::load(&space_bytes)?;
                 cs::remove_board_ref(&mut space_doc, &board_id)?;
                 ss::update_space_doc(storage.conn(), &space, &space_doc.save())?;
@@ -785,6 +874,80 @@ async fn main() -> anyhow::Result<()> {
                 storage.delete_board(&board_id)?;
                 if json { println!("{}", serde_json::json!({"deleted": true, "board_id": board_id, "space_id": space})); }
                 else { println!("Deleted board {} from space {}", board_id, space); }
+            }
+            BoardCommands::Undo { board_id, json } => {
+                let actor_key = identity.public_key_hex();
+                let conn = storage.conn();
+                let row: Option<(i64, String, Vec<u8>)> = conn.query_row(
+                    "SELECT seq, action_tag, inverse_op FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2 ORDER BY seq DESC LIMIT 1",
+                    rusqlite::params![board_id, actor_key],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                ).ok();
+                let (seq, action_tag, prev_bytes) = match row {
+                    None => {
+                        if json { println!("{}", serde_json::json!({"ok": false, "reason": "nothing to undo"})); }
+                        else { println!("Nothing to undo."); }
+                        return Ok(());
+                    }
+                    Some(r) => r,
+                };
+                let mut cur = monotask_storage::board::load_board(conn, &board_id)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let cur_bytes = cur.save();
+                let redo_seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM redo_stack WHERE board_id = ?1 AND actor_key = ?2",
+                    rusqlite::params![board_id, actor_key], |r| r.get(0)).unwrap_or(1);
+                let hlc = monotask_core::clock::now();
+                conn.execute(
+                    "INSERT INTO redo_stack (board_id, actor_key, seq, action_tag, forward_op, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![board_id, actor_key, redo_seq, action_tag, &cur_bytes, hlc],
+                )?;
+                let mut prev_doc = automerge::AutoCommit::load(&prev_bytes)?;
+                monotask_storage::board::save_board(conn, &board_id, &mut prev_doc)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                conn.execute(
+                    "DELETE FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2 AND seq = ?3",
+                    rusqlite::params![board_id, actor_key, seq],
+                )?;
+                if json { println!("{}", serde_json::json!({"ok": true})); }
+                else { println!("Undo successful."); }
+            }
+            BoardCommands::Redo { board_id, json } => {
+                let actor_key = identity.public_key_hex();
+                let conn = storage.conn();
+                let row: Option<(i64, String, Vec<u8>)> = conn.query_row(
+                    "SELECT seq, action_tag, forward_op FROM redo_stack WHERE board_id = ?1 AND actor_key = ?2 ORDER BY seq DESC LIMIT 1",
+                    rusqlite::params![board_id, actor_key],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                ).ok();
+                let (seq, action_tag, forward_bytes) = match row {
+                    None => {
+                        if json { println!("{}", serde_json::json!({"ok": false, "reason": "nothing to redo"})); }
+                        else { println!("Nothing to redo."); }
+                        return Ok(());
+                    }
+                    Some(r) => r,
+                };
+                let mut cur = monotask_storage::board::load_board(conn, &board_id)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                let cur_bytes = cur.save();
+                let undo_seq: i64 = conn.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2",
+                    rusqlite::params![board_id, actor_key], |r| r.get(0)).unwrap_or(1);
+                let hlc = monotask_core::clock::now();
+                conn.execute(
+                    "INSERT INTO undo_stack (board_id, actor_key, seq, action_tag, inverse_op, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    rusqlite::params![board_id, actor_key, undo_seq, action_tag, &cur_bytes, hlc],
+                )?;
+                let mut fwd_doc = automerge::AutoCommit::load(&forward_bytes)?;
+                monotask_storage::board::save_board(conn, &board_id, &mut fwd_doc)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                conn.execute(
+                    "DELETE FROM redo_stack WHERE board_id = ?1 AND actor_key = ?2 AND seq = ?3",
+                    rusqlite::params![board_id, actor_key, seq],
+                )?;
+                if json { println!("{}", serde_json::json!({"ok": true})); }
+                else { println!("Redo successful."); }
             }
             BoardCommands::Schema { board_id, json } => {
                 let doc = storage.load_board(&board_id)?;
@@ -1420,12 +1583,61 @@ async fn main() -> anyhow::Result<()> {
                     else { println!("Removed prerequisite {} (board: {}) from card {} (board: {})", prereq_card_id, prereq_board_id, card_id, board_id); }
                 },
             },
+            CardCommands::Link { cmd } => match cmd {
+                LinkCommands::Add { board_id, card_id, target_board_id, target_card_id, json } => {
+                    let mut doc = storage.load_board(&board_id)?;
+                    monotask_core::card::add_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)?;
+                    storage.save_board(&board_id, &mut doc)?;
+                    if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "card_id": card_id, "target_board_id": target_board_id, "target_card_id": target_card_id})); }
+                    else { println!("Linked {card_id} → {target_card_id} (board: {target_board_id})"); }
+                }
+                LinkCommands::List { board_id, card_id, json } => {
+                    let doc = storage.load_board(&board_id)?;
+                    let links = monotask_core::card::list_card_links(&doc, &card_id)?;
+                    if json {
+                        let out: Vec<_> = links.iter().map(|(bid, cid)| serde_json::json!({"board_id": bid, "card_id": cid})).collect();
+                        println!("{}", serde_json::to_string_pretty(&out)?);
+                    } else if links.is_empty() {
+                        println!("No links.");
+                    } else {
+                        for (bid, cid) in &links { println!("{} (board: {})", cid, bid); }
+                    }
+                }
+                LinkCommands::Remove { board_id, card_id, target_board_id, target_card_id, json } => {
+                    let mut doc = storage.load_board(&board_id)?;
+                    monotask_core::card::remove_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)?;
+                    storage.save_board(&board_id, &mut doc)?;
+                    if json { println!("{}", serde_json::json!({"ok": true})); }
+                    else { println!("Removed link {card_id} → {target_card_id}"); }
+                }
+            },
+            CardCommands::Mentions { board_id, card_id, json } => {
+                let mut stmt = storage.conn().prepare(
+                    "SELECT mention_token, created_at FROM mention_index \
+                     WHERE board_id = ?1 AND card_id = ?2 ORDER BY created_at"
+                ).map_err(|e| anyhow::anyhow!(e))?;
+                let rows: Vec<(String, String)> = stmt.query_map(
+                    rusqlite::params![board_id, card_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                ).map_err(|e| anyhow::anyhow!(e))?
+                 .filter_map(|r| r.ok())
+                 .collect();
+                if json {
+                    let out: Vec<_> = rows.iter()
+                        .map(|(token, ts)| serde_json::json!({"mention": token, "created_at": ts}))
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else if rows.is_empty() {
+                    println!("No mentions.");
+                } else {
+                    for (token, ts) in &rows { println!("@{} ({})", token, ts); }
+                }
+            },
             CardCommands::Comment { cmd } => match cmd {
                 CommentCommands::Add { board_id, card_id, text, json } => {
                     let mut doc = storage.load_board(&board_id)?;
-                    // Use placeholder identity until Phase 3 wires real identity
-                    let author_key = "placeholder";
-                    let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, author_key, None, None, None)?;
+                    let author_key = identity.public_key_hex();
+                    let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, &author_key, None, None, None)?;
                     storage.save_board(&board_id, &mut doc)?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&comment)?);
@@ -1559,7 +1771,7 @@ async fn main() -> anyhow::Result<()> {
                     })).collect();
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 } else if visible.is_empty() {
-                    println!("No fields defined. Use `monotask field create` to add one.");
+                    println!("No fields defined. Use `monotaskcli field create` to add one.");
                 } else {
                     for f in &visible {
                         let dv = f.default_value.as_deref().map(|v| format!(" default={v}")).unwrap_or_default();
@@ -1615,8 +1827,68 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Space { cmd } => handle_space(cmd, &mut storage, &identity)?,
         Commands::Profile { cmd } => handle_profile(cmd, &mut storage, &identity, &dir)?,
-        Commands::Version => println!("monotask {}", env!("CARGO_PKG_VERSION")),
+        Commands::Version => println!("monotaskcli {}", env!("CARGO_PKG_VERSION")),
         Commands::AiHelp => print_ai_help(),
+        Commands::App { cmd } => match cmd {
+            AppCommands::Open { url } => {
+                if !url.starts_with("monotask://") {
+                    anyhow::bail!("URL must start with monotask://");
+                }
+                open_url(&url);
+                println!("Opening: {}", url);
+            }
+        },
+        Commands::Chat { cmd } => {
+            let chat_doc_id = |space_id: &str| format!("{space_id}-chat");
+            match cmd {
+                ChatCommands::Send { space_id, text, json } => {
+                    let doc_id = chat_doc_id(&space_id);
+                    let mut doc = match storage.load_board(&doc_id) {
+                        Ok(d) => d,
+                        Err(_) => monotask_core::chat::create_chat_doc()
+                            .map_err(|e| anyhow::anyhow!(e))?,
+                    };
+                    let msg = monotask_core::chat::ChatMessage {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        author: identity.public_key_hex(),
+                        text: text.clone(),
+                        created_at: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs(),
+                        refs: vec![],
+                    };
+                    monotask_core::chat::append_message(&mut doc, &msg)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    let bytes = doc.save();
+                    storage.save_board_bytes(&doc_id, &bytes, true)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if json { println!("{}", serde_json::to_string_pretty(&msg)?); }
+                    else { println!("Sent: {}", msg.text); }
+                }
+                ChatCommands::List { space_id, limit, json } => {
+                    let doc_id = chat_doc_id(&space_id);
+                    let doc = match storage.load_board(&doc_id) {
+                        Ok(d) => d,
+                        Err(_) => {
+                            if json { println!("[]"); } else { println!("No messages."); }
+                            return Ok(());
+                        }
+                    };
+                    let msgs = monotask_core::chat::list_messages(&doc, limit, None)
+                        .map_err(|e| anyhow::anyhow!(e))?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&msgs)?);
+                    } else if msgs.is_empty() {
+                        println!("No messages.");
+                    } else {
+                        for m in &msgs {
+                            println!("[{}] {}: {}", m.created_at, &m.author[..8], m.text);
+                        }
+                    }
+                }
+            }
+        },
         Commands::Sync { detach, stop, status, port, peers } => {
             cmd_sync(dir, detach, stop, status, port, peers).await?;
         }
@@ -1686,7 +1958,7 @@ async fn cmd_sync(
             .into_iter().map(|s| s.id).collect();
         let key_path = data_dir.join("identity.key");
         let bytes = std::fs::read(&key_path)
-            .map_err(|_| anyhow::anyhow!("Identity key not found. Run `monotask init` first."))?;
+            .map_err(|_| anyhow::anyhow!("Identity key not found. Run `monotaskcli init` first."))?;
         let identity_bytes: [u8; 32] = bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid key file length"))?;
@@ -2089,7 +2361,7 @@ async fn cmd_github(
         GithubCommands::Status => {
             match monotask_github::load_token(data_dir)? {
                 Some(_) => println!("Token: {}", "saved".green()),
-                None => println!("Token: {}", "not set — run `monotask github connect`".yellow()),
+                None => println!("Token: {}", "not set — run `monotaskcli github connect`".yellow()),
             }
         }
         GithubCommands::Link { board_id, owner, repo, done_col } => {
@@ -2110,10 +2382,10 @@ async fn cmd_github(
         }
         GithubCommands::Sync { board_id } => {
             let token = monotask_github::load_token(data_dir)?
-                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotask github connect` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli github connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
             let config = monotask_github::get_github_config(&doc)
-                .ok_or_else(|| anyhow::anyhow!("Board not linked to GitHub. Run `monotask github link` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("Board not linked to GitHub. Run `monotaskcli github link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_github::sync_board(&mut doc, &token, &config, &actor_pk).await?;
             storage.save_board(&board_id, &mut doc)?;
@@ -2173,12 +2445,12 @@ async fn cmd_linear(
                         Err(e) => eprintln!("Could not fetch teams: {e}"),
                     }
                 }
-                None => println!("Token: {}", "not set — run `monotask linear connect`".yellow()),
+                None => println!("Token: {}", "not set — run `monotaskcli linear connect`".yellow()),
             }
         }
         LinearCommands::Teams => {
             let token = monotask_linear::load_token(data_dir)?
-                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotask linear connect` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let teams = monotask_linear::list_teams(&token).await?;
             println!("{:<40} {:<20} {}", "ID", "Key", "Name");
             for t in &teams {
@@ -2187,7 +2459,7 @@ async fn cmd_linear(
         }
         LinearCommands::Projects { team_id } => {
             let token = monotask_linear::load_token(data_dir)?
-                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotask linear connect` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let projects = monotask_linear::list_projects(&token, &team_id).await?;
             println!("{:<40} {}", "ID", "Name");
             for p in &projects {
@@ -2196,7 +2468,7 @@ async fn cmd_linear(
         }
         LinearCommands::Link { board_id, team, project, done_col } => {
             let token = monotask_linear::load_token(data_dir)?
-                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotask linear connect` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
 
             // Fetch project name for display
@@ -2239,10 +2511,10 @@ async fn cmd_linear(
         }
         LinearCommands::Sync { board_id } => {
             let token = monotask_linear::load_token(data_dir)?
-                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotask linear connect` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
             let config = monotask_linear::get_linear_config(&doc)
-                .ok_or_else(|| anyhow::anyhow!("Board not linked to Linear. Run `monotask linear link` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("Board not linked to Linear. Run `monotaskcli linear link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_linear::sync_board(&mut doc, &token, &config, &actor_pk).await?;
             storage.save_board(&board_id, &mut doc)?;
@@ -2324,7 +2596,7 @@ async fn cmd_mail(
                     monotask_mail::save_imap_credentials(data_dir, &creds)?;
                     println!("{}", "✓ IMAP connected and credentials saved".green());
                     println!("  Username: {username}");
-                    println!("  Tip: use `monotask mail link <BOARD_ID> --provider imap` to link a board.");
+                    println!("  Tip: use `monotaskcli mail link <BOARD_ID> --provider imap` to link a board.");
                 }
                 Err(e) => {
                     anyhow::bail!("IMAP connection test failed: {e}\nCheck host, port, username, and password.");
@@ -2339,32 +2611,47 @@ async fn cmd_mail(
                     println!("  Folder:   {}", c.folder);
                 }
             } else {
-                println!("IMAP: {}", "not configured — run `monotask mail imap-connect`".yellow());
+                println!("IMAP: {}", "not configured — run `monotaskcli mail imap-connect`".yellow());
             }
         }
         MailCommands::ImapDisconnect => {
             monotask_mail::delete_imap_credentials(data_dir)?;
             println!("IMAP credentials removed.");
         }
-        MailCommands::Link { board_id, provider, inbox_col, keep_last } => {
+        MailCommands::Link { board_id, provider, gmail_client_id, outlook_client_id, tenant_id, inbox_col, keep_last } => {
             let mut doc = storage.load_board(&board_id)?;
+            // Arg > env var > existing board config (preserve on re-link)
+            let existing = monotask_mail::get_mail_config(&doc);
+            let resolve_id = |arg: Option<String>, env_key: &str, existing_val: Option<String>| {
+                arg
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var(env_key).ok().filter(|s| !s.is_empty()))
+                    .or(existing_val)
+            };
             let config = monotask_mail::MailConfig {
-                provider,
-                gmail_client_id: monotask_mail::load_token(data_dir, "gmail").ok().flatten()
-                    .map(|_| std::env::var("MAIL_GMAIL_CLIENT_ID").unwrap_or_default())
-                    .filter(|s| !s.is_empty()),
-                outlook_client_id: monotask_mail::load_token(data_dir, "outlook").ok().flatten()
-                    .map(|_| std::env::var("MAIL_OUTLOOK_CLIENT_ID").unwrap_or_default())
-                    .filter(|s| !s.is_empty()),
-                outlook_tenant_id: std::env::var("MAIL_OUTLOOK_TENANT_ID").unwrap_or_else(|_| "common".into()),
+                provider: provider.clone(),
+                gmail_client_id: resolve_id(gmail_client_id, "MAIL_GMAIL_CLIENT_ID",
+                    existing.as_ref().and_then(|c| c.gmail_client_id.clone())),
+                outlook_client_id: resolve_id(outlook_client_id, "MAIL_OUTLOOK_CLIENT_ID",
+                    existing.as_ref().and_then(|c| c.outlook_client_id.clone())),
+                outlook_tenant_id: tenant_id
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| std::env::var("MAIL_OUTLOOK_TENANT_ID").ok())
+                    .or_else(|| existing.as_ref().map(|c| c.outlook_tenant_id.clone()))
+                    .unwrap_or_else(|| "common".into()),
                 inbox_col_id: inbox_col,
                 keep_last,
-                last_sync: None,
+                last_sync: existing.and_then(|c| c.last_sync),
             };
+            let needs_client_id = (provider.contains("gmail") || provider == "both") && config.gmail_client_id.is_none()
+                || (provider.contains("outlook") || provider == "both") && config.outlook_client_id.is_none();
+            if needs_client_id {
+                eprintln!("Warning: client ID not set for provider '{provider}'. Sync will skip that provider.");
+                eprintln!("Re-run with --gmail-client-id or --outlook-client-id, or set MAIL_GMAIL_CLIENT_ID / MAIL_OUTLOOK_CLIENT_ID env vars.");
+            }
             monotask_mail::set_mail_config(&mut doc, Some(&config))?;
             storage.save_board(&board_id, &mut doc)?;
-            println!("Linked board {board_id} to email sync (provider: {})", config.provider);
-            println!("Tip: set MAIL_GMAIL_CLIENT_ID / MAIL_OUTLOOK_CLIENT_ID env vars for sync.");
+            println!("Linked board {board_id} to email sync (provider: {provider})");
         }
         MailCommands::Unlink { board_id } => {
             let mut doc = storage.load_board(&board_id)?;
@@ -2375,7 +2662,7 @@ async fn cmd_mail(
         MailCommands::Sync { board_id } => {
             let mut doc = storage.load_board(&board_id)?;
             let config = monotask_mail::get_mail_config(&doc)
-                .ok_or_else(|| anyhow::anyhow!("Board not linked to email. Run `monotask mail link` first."))?;
+                .ok_or_else(|| anyhow::anyhow!("Board not linked to email. Run `monotaskcli mail link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_mail::sync_board(&mut doc, data_dir, &config, &actor_pk).await?;
             storage.save_board(&board_id, &mut doc)?;
@@ -2401,25 +2688,25 @@ fn print_ai_help() {
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
 Binary : monotask
-Version: 1.1.6
+Version: 1.3.0
 Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
-Run `monotask ai-help` to print this document at any time.
+Run `monotaskcli ai-help` to print this document at any time.
 
 --------------------------------------------------------------------------------
 QUICK-START FOR AGENTS
 --------------------------------------------------------------------------------
-1. Check your identity:       monotask profile show
-2. Create or pick a space:    monotask space create "My Team"
-3. Create a board in a space: monotask board create "My Project" --space <SPACE_ID>
-4. List columns on a board:   monotask column list <BOARD_ID>
-5. Create a card:             monotask card create <BOARD_ID> <COL_ID> "Task title"
-6. View a card:               monotask card view <BOARD_ID> <CARD_ID>
-7. Add a comment:             monotask card comment add <BOARD_ID> <CARD_ID> "text"
+1. Check your identity:       monotaskcli profile show
+2. Create or pick a space:    monotaskcli space create "My Team"
+3. Create a board in a space: monotaskcli board create "My Project" --space <SPACE_ID>
+4. List columns on a board:   monotaskcli column list <BOARD_ID>
+5. Create a card:             monotaskcli card create <BOARD_ID> <COL_ID> "Task title"
+6. View a card:               monotaskcli card view <BOARD_ID> <CARD_ID>
+7. Add a comment:             monotaskcli card comment add <BOARD_ID> <CARD_ID> "text"
 
 NOTE: Boards must belong to a space. `board create` requires --space <SPACE_ID>.
-      Run `monotask space list` first to get a space ID.
+      Run `monotaskcli space list` first to get a space ID.
 
 Always use --json for machine-readable output when parsing results.
 
@@ -2427,10 +2714,10 @@ Always use --json for machine-readable output when parsing results.
 GLOBAL FLAGS
 --------------------------------------------------------------------------------
 --data-dir <PATH>
-    Override the storage directory (default: $XDG_DATA_HOME/monotask or
-    ~/.local/share/monotask on Linux/macOS).
+    Override the storage directory (default: $XDG_DATA_HOME/monotaskcli or
+    ~/.local/share/monotaskcli on Linux/macOS).
     The directory contains:
-      monotask.db  – SQLite database (boards, spaces, profile, invites)
+      monotaskcli.db  – SQLite database (boards, spaces, profile, invites)
       identity.key – Raw 32-byte Ed25519 secret key (auto-created on first run)
 
 --------------------------------------------------------------------------------
@@ -2454,12 +2741,12 @@ COMMANDS
 --------------------------------------------------------------------------------
 
 ## init
-Usage: monotask init
+Usage: monotaskcli init
 Effect: Prints the data directory path. Triggers identity creation if missing.
         Safe to run multiple times (idempotent).
 
 ## version
-Usage: monotask version
+Usage: monotaskcli version
 Effect: Prints the CLI version string.
 
 ────────────────────────────────────────────────────────────────────────────────
@@ -2475,17 +2762,17 @@ Automerge CRDT documents (binary blobs in SQLite).
   Creates a new board inside the given space. Boards must belong to a space —
   this is enforced at creation time. The board is added to the space immediately.
 
-  Run `monotask space list` to find your SPACE_ID before calling this.
+  Run `monotaskcli space list` to find your SPACE_ID before calling this.
 
   Text output:  "Created board: <title> (<id>) in space <space_id>"
   JSON output:  {"id":"<uuid>","title":"<title>","space_id":"<uuid>","deep_link":"monotask://board/<id>"}
 
   Error: if SPACE_ID does not exist locally, the command fails with:
-    "Space '<id>' not found. Run `monotask space list` to see available spaces."
+    "Space '<id>' not found. Run `monotaskcli space list` to see available spaces."
 
   Example:
-    $ SPACE=$(monotask space list | awk 'NR==1{print $1}')
-    $ monotask board create "Sprint 42" --space $SPACE --json
+    $ SPACE=$(monotaskcli space list | awk 'NR==1{print $1}')
+    $ monotaskcli board create "Sprint 42" --space $SPACE --json
     {"id":"a1b2c3d4-...","title":"Sprint 42","space_id":"...","deep_link":"monotask://board/a1b2c3..."}
 
 ### board list
@@ -2508,14 +2795,14 @@ Automerge CRDT documents (binary blobs in SQLite).
 
   Permanently deletes a board and removes it from its space.
   Removes board data, space membership, and the Automerge space doc ref.
-  Use `monotask board list` and `monotask space list` to get IDs.
+  Use `monotaskcli board list` and `monotaskcli space list` to get IDs.
   Text output:  "Deleted board <id> from space <space_id>"
   JSON output:  {"deleted":true,"board_id":"<uuid>","space_id":"<uuid>"}
 
   Example:
-    $ SPACE=$(monotask space list --json | jq -r '.[0].id')
-    $ BOARD=$(monotask board list --json | jq -r '.[0].id')
-    $ monotask board delete $BOARD --space $SPACE
+    $ SPACE=$(monotaskcli space list --json | jq -r '.[0].id')
+    $ BOARD=$(monotaskcli board list --json | jq -r '.[0].id')
+    $ monotaskcli board delete $BOARD --space $SPACE
 
 ────────────────────────────────────────────────────────────────────────────────
 ## column
@@ -2607,10 +2894,10 @@ Priority calculation (when impact and effort are set):
     }
 
   Examples:
-    $ monotask card list $BOARD --json
-    $ monotask card list $BOARD --col $TODO_COL --json
-    $ monotask card list $BOARD --label "role:writer" --json
-    $ monotask card list $BOARD --col $COL --label "role:reviewer" --json
+    $ monotaskcli card list $BOARD --json
+    $ monotaskcli card list $BOARD --col $TODO_COL --json
+    $ monotaskcli card list $BOARD --label "role:writer" --json
+    $ monotaskcli card list $BOARD --col $COL --label "role:reviewer" --json
 
 ### card create <BOARD_ID> <COL_ID> <TITLE>
   --json   Output JSON
@@ -2809,9 +3096,8 @@ Comment thread management for cards.
 ### card comment add <BOARD_ID> <CARD_ID> <TEXT>
   --json   Output JSON
 
-  Adds a comment to the card. Author field is set to "placeholder" until
-  Phase 3 wires real identity.
-  JSON output:  {"id":"<uuid>","author":"placeholder","text":"<str>",
+  Adds a comment to the card. Author field is the local identity public key (hex).
+  JSON output:  {"id":"<uuid>","author":"<pubkey-hex>","text":"<str>",
                  "created_at":"<hlc>","deleted":false,
                  "image_b64":null,"image_mime":null,"image_name":null}
 
@@ -2880,6 +3166,31 @@ Prerequisite management — declares that one card must be done before another.
 
   Removes a prerequisite link.
   JSON output:  {"ok":true}
+
+### card link add <BOARD_ID> <CARD_ID> <TARGET_BOARD_ID> <TARGET_CARD_ID>
+  --json   Output JSON
+
+  Creates a directional card-to-card link stored in the CRDT document.
+  JSON output:  {"ok":true,"board_id":"<str>","card_id":"<str>","target_board_id":"<str>","target_card_id":"<str>"}
+
+### card link list <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Lists all outgoing card links for the card.
+  JSON output:  [{"board_id":"<str>","card_id":"<str>"}, ...]
+
+### card link remove <BOARD_ID> <CARD_ID> <TARGET_BOARD_ID> <TARGET_CARD_ID>
+  --json   Output JSON
+
+  Removes a card-to-card link.
+  JSON output:  {"ok":true}
+
+### card mentions <BOARD_ID> <CARD_ID>
+  --json   Output JSON
+
+  Returns all @mention tokens found in the card's description (indexed in SQLite).
+  Text output:  @alice (2026-06-30T12:00:00Z)
+  JSON output:  [{"mention":"alice","created_at":"<ISO8601>"}, ...]
 
 ────────────────────────────────────────────────────────────────────────────────
 ## field
@@ -2982,7 +3293,7 @@ Automerge document. Field values are stored on each card and indexed in SQLite.
 
   --where expressions use AND semantics. Filters are evaluated via the SQLite
   custom field index (efficient even on large boards). FIELD_REF may be name or UUID.
-  Example: monotask card list $BOARD --where "Stage=Qualified" --where "Amount>10000"
+  Example: monotaskcli card list $BOARD --where "Stage=Qualified" --where "Amount>10000"
 
 ────────────────────────────────────────────────────────────────────────────────
 ## card upsert (CRM upsert pattern)
@@ -3007,6 +3318,21 @@ Automerge document. Field values are stored on each card and indexed in SQLite.
   Shows the board's columns and all active custom field definitions in one call.
   Useful as a first call to discover what fields and columns exist before operating.
   JSON output:  {"board_id":"<uuid>","title":"<str>","columns":[...],"fields":[...]}
+
+### board undo <BOARD_ID>
+  --json
+
+  Restores the board to its state before the most recent mutation made by the
+  local identity. Moves that entry to the redo stack. Returns false if nothing
+  to undo.
+  JSON output:  {"ok":true}  or  {"ok":false,"reason":"nothing to undo"}
+
+### board redo <BOARD_ID>
+  --json
+
+  Re-applies the most recently undone mutation on the board. Returns false if
+  nothing to redo.
+  JSON output:  {"ok":true}  or  {"ok":false,"reason":"nothing to redo"}
 
 ────────────────────────────────────────────────────────────────────────────────
 ## checklist
@@ -3235,8 +3561,40 @@ One card per unique sender. Recent emails stored as comments. BYO OAuth2 credent
   Custom fields updated: Email, Last Seen, Email Count, Provider, Labels.
 
 ────────────────────────────────────────────────────────────────────────────────
+## chat
+Per-space persistent P2P chat backed by Automerge CRDT. Messages sync via the
+same pipeline as boards. Each space has one chat doc keyed `{space_id}-chat`.
+
+### chat send <SPACE_ID> <TEXT>
+  --json
+
+  Appends a message to the space chat. Author is set to the local identity pubkey.
+  JSON output:  {"id":"<uuid>","author":"<pubkey-hex>","text":"<str>","created_at":<unix>,"refs":[]}
+
+### chat list <SPACE_ID>
+  --limit <N>   Maximum messages to return (default: 50)
+  --json
+
+  Lists recent chat messages in chronological order (oldest first).
+  JSON output:  [{"id":"...","author":"...","text":"...","created_at":...,"refs":[...]}, ...]
+
+────────────────────────────────────────────────────────────────────────────────
+## app
+Commands for interacting with the Monotask desktop application.
+
+### app open <URL>
+  Opens a monotask:// deep link in the running desktop app.
+  Supported URL patterns:
+    monotask://board/<BOARD_ID>             — navigate to a board
+    monotask://board/<BOARD_ID>/card/<ID>  — open a specific card
+
+  Example:
+    monotaskcli app open monotask://board/a1b2c3d4-...
+    monotaskcli app open "monotask://board/abc/card/xyz"
+
+────────────────────────────────────────────────────────────────────────────────
 ## sync
-Starts the P2P sync daemon using libp2p (mDNS peer discovery + TCP transport).
+Starts the P2P sync daemon using iroh QUIC transport (direct address + bootstrap peers).
 The daemon keeps boards in sync with other Monotask peers on the local network.
 
 ### sync [OPTIONS]
@@ -3250,10 +3608,10 @@ The daemon keeps boards in sync with other Monotask peers on the local network.
                      Repeat the flag to add multiple peers.
 
   Example (background daemon with fixed port):
-    monotask sync --detach --port 7272
+    monotaskcli sync --detach --port 7272
 
   Example (connect directly to a known peer):
-    monotask sync --peer /ip4/192.168.1.10/tcp/7272
+    monotaskcli sync --peer /ip4/192.168.1.10/tcp/7272
 
 --------------------------------------------------------------------------------
 TIMESTAMPS (HLC FORMAT)
@@ -3287,7 +3645,7 @@ Field ID      : UUID v4  ← CLI also accepts field name in all field commands
 --------------------------------------------------------------------------------
 STORAGE
 --------------------------------------------------------------------------------
-Location:  ~/.local/share/monotask/monotask.db  (or custom --data-dir)
+Location:  ~/.local/share/monotaskcli/monotaskcli.db  (or custom --data-dir)
 
 Database tables:
   boards            board_id | automerge_doc (BLOB) | last_modified | last_heads
@@ -3314,101 +3672,101 @@ COMMON AGENT WORKFLOWS
 --------------------------------------------------------------------------------
 
 ### Workflow: Create a board and populate it
-  SPACE=$(monotask space list | awk 'NR==1{print $1}')   # pick first space
-  BOARD=$(monotask board create "My Board" --space $SPACE --json | jq -r .id)
-  TODO_COL=$(monotask column create $BOARD "Todo" --json | jq -r .id)
-  DOING_COL=$(monotask column create $BOARD "Doing" --json | jq -r .id)
-  DONE_COL=$(monotask column create $BOARD "Done" --json | jq -r .id)
-  CARD=$(monotask card create $BOARD $TODO_COL "First task" --json | jq -r .id)
-  monotask card view $BOARD $CARD --json
+  SPACE=$(monotaskcli space list | awk 'NR==1{print $1}')   # pick first space
+  BOARD=$(monotaskcli board create "My Board" --space $SPACE --json | jq -r .id)
+  TODO_COL=$(monotaskcli column create $BOARD "Todo" --json | jq -r .id)
+  DOING_COL=$(monotaskcli column create $BOARD "Doing" --json | jq -r .id)
+  DONE_COL=$(monotaskcli column create $BOARD "Done" --json | jq -r .id)
+  CARD=$(monotaskcli card create $BOARD $TODO_COL "First task" --json | jq -r .id)
+  monotaskcli card view $BOARD $CARD --json
 
 ### Workflow: Inspect all cards in a board
-  COLS=$(monotask column list $BOARD --json)
+  COLS=$(monotaskcli column list $BOARD --json)
   echo $COLS | jq -r '.[].card_ids[]' | while read CARD_ID; do
-    monotask card view $BOARD $CARD_ID --json
+    monotaskcli card view $BOARD $CARD_ID --json
   done
 
 ### Workflow: Score and prioritise cards
   # ICE scoring: set impact (value) and effort (cost), priority auto-computed
-  monotask card set-impact  $BOARD $CARD 8
-  monotask card set-effort  $BOARD $CARD 3
+  monotaskcli card set-impact  $BOARD $CARD 8
+  monotaskcli card set-effort  $BOARD $CARD 3
   # Or set priority directly without impact/effort
-  monotask card set-direct-priority $BOARD $CARD 9
+  monotaskcli card set-direct-priority $BOARD $CARD 9
   # Reset all scoring fields
-  monotask card clear-priority $BOARD $CARD
+  monotaskcli card clear-priority $BOARD $CARD
 
 ### Workflow: Attach an image and reference it in the description
-  ATT=$(monotask card attach-image $BOARD $CARD screenshot.png --json | jq -r .token)
-  monotask card set-description $BOARD $CARD "See: ![$ATT]($ATT)"
+  ATT=$(monotaskcli card attach-image $BOARD $CARD screenshot.png --json | jq -r .token)
+  monotaskcli card set-description $BOARD $CARD "See: ![$ATT]($ATT)"
 
 ### Workflow: Build a subtask hierarchy
-  PARENT=$(monotask card create $BOARD $TODO_COL "Epic: Auth" --json | jq -r .id)
-  monotask card subtask add $BOARD $PARENT $BOARD $TODO_COL "Subtask: Login page" --json
-  monotask card subtask list $BOARD $PARENT --json
+  PARENT=$(monotaskcli card create $BOARD $TODO_COL "Epic: Auth" --json | jq -r .id)
+  monotaskcli card subtask add $BOARD $PARENT $BOARD $TODO_COL "Subtask: Login page" --json
+  monotaskcli card subtask list $BOARD $PARENT --json
 
 ### Workflow: Link GitHub and sync
-  monotask github connect ghp_yourtoken
-  monotask github link $BOARD myorg myrepo --done-col $DONE_COL
-  monotask github sync $BOARD
+  monotaskcli github connect ghp_yourtoken
+  monotaskcli github link $BOARD myorg myrepo --done-col $DONE_COL
+  monotaskcli github sync $BOARD
 
 ### Workflow: Link Linear and sync
-  monotask linear connect lin_api_yourkey
-  monotask linear teams
-  monotask linear projects <TEAM_ID>
-  monotask linear link $BOARD --team <TEAM_ID> --project <PROJECT_ID>
-  monotask linear sync $BOARD
+  monotaskcli linear connect lin_api_yourkey
+  monotaskcli linear teams
+  monotaskcli linear projects <TEAM_ID>
+  monotaskcli linear link $BOARD --team <TEAM_ID> --project <PROJECT_ID>
+  monotaskcli linear sync $BOARD
 
 ### Workflow: Collaborative space setup (two users, A and B)
   # --- User A ---
-  SPACE=$(monotask space create "Team" | awk '{print $NF}' | tr -d '()')
-  monotask space boards add $SPACE $BOARD
-  monotask space invite export $SPACE invite.space
+  SPACE=$(monotaskcli space create "Team" | awk '{print $NF}' | tr -d '()')
+  monotaskcli space boards add $SPACE $BOARD
+  monotaskcli space invite export $SPACE invite.space
   # Share invite.space with User B
 
   # --- User B ---
-  monotask space join invite.space
-  monotask space boards list $SPACE   # see boards shared by A
+  monotaskcli space join invite.space
+  monotaskcli space boards list $SPACE   # see boards shared by A
 
 ### Workflow: Build a CRM pipeline with custom fields
   # 1. Create the board and columns
-  SPACE=$(monotask space list | awk 'NR==1{print $1}')
-  BOARD=$(monotask board create "CRM Pipeline" --space $SPACE --json | jq -r .id)
-  NEW=$(monotask column create $BOARD "New Leads" --json | jq -r .id)
-  QUAL=$(monotask column create $BOARD "Qualified" --json | jq -r .id)
-  WON=$(monotask column create $BOARD "Won" --json | jq -r .id)
+  SPACE=$(monotaskcli space list | awk 'NR==1{print $1}')
+  BOARD=$(monotaskcli board create "CRM Pipeline" --space $SPACE --json | jq -r .id)
+  NEW=$(monotaskcli column create $BOARD "New Leads" --json | jq -r .id)
+  QUAL=$(monotaskcli column create $BOARD "Qualified" --json | jq -r .id)
+  WON=$(monotaskcli column create $BOARD "Won" --json | jq -r .id)
 
   # 2. Define custom fields
-  STAGE=$(monotask field create $BOARD "Stage" --field-type select \
+  STAGE=$(monotaskcli field create $BOARD "Stage" --field-type select \
     --option "Lead" --option "Qualified" --option "Won" \
     --default-value "Lead" --auto-apply --json | jq -r .id)
-  monotask field create $BOARD "Company" --field-type text --json
-  monotask field create $BOARD "Amount" --field-type number --json
-  monotask field create $BOARD "Close Date" --field-type date --json
+  monotaskcli field create $BOARD "Company" --field-type text --json
+  monotaskcli field create $BOARD "Amount" --field-type number --json
+  monotaskcli field create $BOARD "Close Date" --field-type date --json
 
   # 3. Add leads with field values
-  monotask card create $BOARD $NEW "Acme Corp" \
+  monotaskcli card create $BOARD $NEW "Acme Corp" \
     --field "Company=Acme Corp" --field "Amount=25000" --json
 
   # 4. Upsert a lead (create or update based on Company)
-  monotask card upsert $BOARD $NEW "Globex" \
+  monotaskcli card upsert $BOARD $NEW "Globex" \
     --match-field Company --match-value "Globex" \
     --field "Amount=50000" --field "Stage=Qualified" --json
 
   # 5. Query qualified leads with amount > 20000
-  monotask card list $BOARD --where "Stage=Qualified" --where "Amount>20000" --json
+  monotaskcli card list $BOARD --where "Stage=Qualified" --where "Amount>20000" --json
 
   # 6. Show full schema
-  monotask board schema $BOARD --json
+  monotaskcli board schema $BOARD --json
 
 ### Workflow: Add a checklist to a card
-  CL=$(monotask checklist add $BOARD $CARD "Definition of Done" --json | jq -r .id)
-  ITEM=$(monotask checklist item-add $BOARD $CARD $CL "Write tests" --json | jq -r .id)
-  monotask checklist item-check $BOARD $CARD $CL $ITEM
+  CL=$(monotaskcli checklist add $BOARD $CARD "Definition of Done" --json | jq -r .id)
+  ITEM=$(monotaskcli checklist item-add $BOARD $CARD $CL "Write tests" --json | jq -r .id)
+  monotaskcli checklist item-check $BOARD $CARD $CL $ITEM
 
 ### Workflow: Comment thread
-  monotask card comment add $BOARD $CARD "Starting work on this"
-  monotask card comment add $BOARD $CARD "Blocked on API access"
-  monotask card comment list $BOARD $CARD --json
+  monotaskcli card comment add $BOARD $CARD "Starting work on this"
+  monotaskcli card comment add $BOARD $CARD "Blocked on API access"
+  monotaskcli card comment list $BOARD $CARD --json
 
 --------------------------------------------------------------------------------
 ERROR HANDLING

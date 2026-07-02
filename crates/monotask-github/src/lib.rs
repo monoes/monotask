@@ -1156,7 +1156,7 @@ pub async fn sync_single_card(
 
     let card = monotask_core::card::read_card(doc, card_id)?;
     let columns = monotask_core::column::list_columns(doc)?;
-    let col_title_to_id: HashMap<String, String> = columns.iter()
+    let _col_title_to_id: HashMap<String, String> = columns.iter()
         .map(|c| (c.title.clone(), c.id.clone())).collect();
     let col_id_to_title: HashMap<String, String> = columns.iter()
         .map(|c| (c.id.clone(), c.title.clone())).collect();

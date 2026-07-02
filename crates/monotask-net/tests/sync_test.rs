@@ -12,39 +12,46 @@ fn make_identity() -> [u8; 32] {
     Identity::generate().to_secret_bytes()
 }
 
-/// Integration test: two NetworkHandle nodes start, mDNS discovers them on loopback,
-/// and at least one side emits a PeerConnected event.
+/// Integration test: two NetworkHandle nodes start, node_b dials node_a directly,
+/// and node_a emits a PeerConnected event.
 #[tokio::test]
 async fn two_nodes_connect_and_emit_peer_connected() {
     let id_a = make_identity();
     let id_b = make_identity();
     let storage_a = make_storage();
-    let storage_b = make_storage();
+    let _storage_b = make_storage();
+
+    // Use fixed ports so node_b can dial node_a directly.
+    let port_a: u16 = 17280;
 
     let mut node_a = NetworkHandle::start(
-        NetConfig { listen_port: 0, data_dir: std::path::PathBuf::from("/tmp/node_a"), bootstrap_peers: Vec::new() },
+        NetConfig {
+            listen_port: port_a,
+            data_dir: std::path::PathBuf::from("/tmp/node_a_iroh"),
+            bootstrap_peers: Vec::new(),
+        },
         storage_a,
         id_a,
     ).await.expect("node_a start");
 
-    let node_b = NetworkHandle::start(
-        NetConfig { listen_port: 0, data_dir: std::path::PathBuf::from("/tmp/node_b"), bootstrap_peers: Vec::new() },
-        storage_b,
+    // node_b boots knowing node_a's EndpointId@ip:port
+    let peer_a_addr = format!("{}@127.0.0.1:{}", NetworkHandle::peer_id_from_identity(id_a), port_a);
+    let _node_b = NetworkHandle::start(
+        NetConfig {
+            listen_port: 0,
+            data_dir: std::path::PathBuf::from("/tmp/node_b_iroh"),
+            bootstrap_peers: vec![peer_a_addr],
+        },
+        make_storage(),
         id_b,
     ).await.expect("node_b start");
 
-    // Give mDNS time to discover on loopback
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // One side should have received a PeerConnected event
-    let timeout = Duration::from_secs(10);
-    let found = tokio::time::timeout(timeout, async {
+    // Wait for node_a to see PeerConnected
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let evt = node_a.event_rx.as_mut().and_then(|rx| rx.try_recv().ok());
-            if let Some(event) = evt {
-                if matches!(event, NetEvent::PeerConnected { .. }) {
-                    return true;
-                }
+            if let Some(NetEvent::PeerConnected { .. }) = evt {
+                return true;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -53,5 +60,4 @@ async fn two_nodes_connect_and_emit_peer_connected() {
     assert!(found.is_ok(), "nodes did not connect within 10 seconds");
 
     node_a.stop().await;
-    node_b.stop().await;
 }

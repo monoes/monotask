@@ -10,11 +10,11 @@
 use std::process::Command;
 
 fn cli(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_app-cli"))
+    Command::new(env!("CARGO_BIN_EXE_monotaskcli"))
         .args(["--data-dir", dir.to_str().unwrap()])
         .args(args)
         .output()
-        .expect("failed to run app-cli")
+        .expect("failed to run monotaskcli")
 }
 
 fn stdout(out: &std::process::Output) -> String {

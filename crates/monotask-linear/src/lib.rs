@@ -304,6 +304,7 @@ pub struct LinearWorkflowState {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct LinearUser {
+    #[allow(dead_code)]
     id: String,
     name: String,
     #[allow(dead_code)]
@@ -312,16 +313,20 @@ struct LinearUser {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct LinearLabel {
+    #[allow(dead_code)]
     id: String,
     name: String,
+    #[allow(dead_code)]
     color: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct LinearComment {
+    #[allow(dead_code)]
     id: String,
     body: String,
     #[serde(rename = "updatedAt")]
+    #[allow(dead_code)]
     updated_at: String,
     user: Option<LinearUser>,
 }
@@ -343,6 +348,7 @@ struct LinearIssue {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct LinearStateRef {
+    #[allow(dead_code)]
     id: String,
     name: String,
     #[serde(rename = "type")]
