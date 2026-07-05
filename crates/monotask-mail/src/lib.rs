@@ -242,16 +242,93 @@ pub async fn wait_and_complete_oauth(
     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<h1>Connected! You can close this tab.</h1>").await;
     drop(stream);
 
+    let token = exchange_code(provider, tenant_id, client_id, &code, redirect_uri, verifier).await?;
+    save_token(data_dir, provider, &token)
+}
+
+async fn exchange_code(
+    provider: &str,
+    tenant_id: &str,
+    client_id: &str,
+    code: &str,
+    redirect_uri: &str,
+    verifier: &str,
+) -> Result<MailToken> {
     let token_url = token_url(provider, tenant_id);
-    let token = exchange_request(&token_url, &[
+    exchange_request(&token_url, &[
         ("client_id", client_id),
-        ("code", &code),
+        ("code", code),
         ("redirect_uri", redirect_uri),
         ("grant_type", "authorization_code"),
         ("code_verifier", verifier),
-    ]).await?;
+    ]).await
+}
 
-    save_token(data_dir, provider, &token)
+// ── Non-blocking OAuth (headless/agent use) ───────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PendingOAuth {
+    provider: String,
+    client_id: String,
+    tenant_id: String,
+    verifier: String,
+    redirect_uri: String,
+    created_at: i64,
+}
+
+fn pending_oauth_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("oauth_pending.json")
+}
+
+/// Start an OAuth PKCE flow without blocking: build the auth URL as usual, but
+/// persist the pending verifier/redirect state to disk instead of waiting on a
+/// loopback listener, and return the auth URL immediately. Pair with
+/// `complete_oauth` once the caller has the authorization code (e.g. from
+/// reading the redirect URL manually — useful for headless/agent use).
+pub async fn start_oauth(data_dir: &Path, provider: &str, client_id: &str, tenant_id: &str) -> Result<String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let (verifier, challenge) = generate_pkce();
+    let url = build_auth_url(provider, client_id, tenant_id, &challenge, &redirect_uri)?;
+
+    let pending = PendingOAuth {
+        provider: provider.to_string(),
+        client_id: client_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        verifier,
+        redirect_uri,
+        created_at: chrono::Utc::now().timestamp(),
+    };
+    let path = pending_oauth_path(data_dir);
+    std::fs::write(&path, serde_json::to_string(&pending)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    Ok(url)
+}
+
+/// Complete a flow previously started with `start_oauth`, given the
+/// authorization code from the redirect URL. Exchanges the code for tokens
+/// using the same logic as the interactive flow, saves the credentials, and
+/// removes the pending state file.
+pub async fn complete_oauth(data_dir: &Path, provider: &str, code: &str) -> Result<()> {
+    let path = pending_oauth_path(data_dir);
+    let json = std::fs::read_to_string(&path)
+        .with_context(|| format!("No pending OAuth flow for provider '{provider}'. Run `mail {provider}-connect --no-wait` first."))?;
+    let pending: PendingOAuth = serde_json::from_str(&json)?;
+    if pending.provider != provider {
+        anyhow::bail!("Pending OAuth flow is for provider '{}', not '{}'", pending.provider, provider);
+    }
+
+    let token = exchange_code(provider, &pending.tenant_id, &pending.client_id, code, &pending.redirect_uri, &pending.verifier).await?;
+    save_token(data_dir, provider, &token)?;
+    std::fs::remove_file(&path)?;
+    Ok(())
 }
 
 async fn exchange_request(token_url: &str, params: &[(&str, &str)]) -> Result<MailToken> {

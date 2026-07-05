@@ -689,7 +689,9 @@ pub async fn sync_board(
                 }
                 let body = issue.body.as_deref().unwrap_or("");
                 // Store description with image markdown stripped (images become attachments in Phase 1c)
-                let _ = monotask_core::card::set_description(doc, &card_id, &strip_image_markdown(body));
+                if let Err(e) = monotask_core::card::set_description(doc, &card_id, &strip_image_markdown(body)) {
+                    result.errors.push(format!("set_description {card_id}: {e}"));
+                }
 
                 // Move card if column changed
                 let current_col = card_to_col.get(&card_id).cloned();
@@ -721,7 +723,9 @@ pub async fn sync_board(
                 sync_non_col_labels(doc, &card_id, &issue.labels, &col_title_to_id);
 
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                let _ = set_github_synced_at(doc, &card_id, &now);
+                if let Err(e) = set_github_synced_at(doc, &card_id, &now) {
+                    result.errors.push(format!("set_github_synced_at {card_id}: {e}"));
+                }
                 result.pulled += 1;
             }
         } else {
@@ -756,11 +760,17 @@ pub async fn sync_board(
             let body = issue.body.as_deref().unwrap_or("");
             let stripped = strip_image_markdown(body);
             if !stripped.is_empty() {
-                let _ = monotask_core::card::set_description(doc, &linked_card_id, &stripped);
+                if let Err(e) = monotask_core::card::set_description(doc, &linked_card_id, &stripped) {
+                    result.errors.push(format!("set_description {linked_card_id}: {e}"));
+                }
             }
-            let _ = set_github_issue_number(doc, &linked_card_id, issue.number);
+            if let Err(e) = set_github_issue_number(doc, &linked_card_id, issue.number) {
+                result.errors.push(format!("set_github_issue_number {linked_card_id}: {e}"));
+            }
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-            let _ = set_github_synced_at(doc, &linked_card_id, &now);
+            if let Err(e) = set_github_synced_at(doc, &linked_card_id, &now) {
+                result.errors.push(format!("set_github_synced_at {linked_card_id}: {e}"));
+            }
             sync_non_col_labels(doc, &linked_card_id, &issue.labels, &col_title_to_id);
 
             // If matched to existing card, move it to the correct column
@@ -775,8 +785,11 @@ pub async fn sync_board(
                 };
                 if let Some(from) = card_to_col.get(&linked_card_id).cloned() {
                     if from != target_col_id {
-                        let _ = monotask_core::column::move_card(doc, &linked_card_id, &from, &target_col_id);
-                        card_to_col.insert(linked_card_id.clone(), target_col_id);
+                        if let Err(e) = monotask_core::column::move_card(doc, &linked_card_id, &from, &target_col_id) {
+                            result.errors.push(format!("move_card {linked_card_id}: {e}"));
+                        } else {
+                            card_to_col.insert(linked_card_id.clone(), target_col_id);
+                        }
                     }
                 }
             }
@@ -995,7 +1008,9 @@ pub async fn sync_board(
                         let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
                         let _ = set_github_synced_at(doc, card_id, &now);
                         if is_done {
-                            let _ = client.update_issue(num, None, None, Some("closed"), None).await;
+                            if let Err(e) = client.update_issue(num, None, None, Some("closed"), None).await {
+                                result.errors.push(format!("close issue #{num}: {e}"));
+                            }
                         }
                         result.pushed += 1;
                     }
@@ -1069,7 +1084,7 @@ pub async fn sync_single_card(
     token: &str,
     config: &GitHubConfig,
     card_id: &str,
-    actor_pk: &[u8],
+    _actor_pk: &[u8],
 ) -> Result<SyncResult> {
     let mut result = SyncResult { pulled: 0, pushed: 0, closed: 0, errors: vec![] };
 
@@ -1101,9 +1116,13 @@ pub async fn sync_single_card(
         .unwrap_or(true);
 
     if needs_pull {
-        let _ = monotask_core::card::rename_card(doc, card_id, &issue.title);
+        if let Err(e) = monotask_core::card::rename_card(doc, card_id, &issue.title) {
+            result.errors.push(format!("rename_card {card_id}: {e}"));
+        }
         let body = issue.body.as_deref().unwrap_or("");
-        let _ = monotask_core::card::set_description(doc, card_id, &strip_image_markdown(body));
+        if let Err(e) = monotask_core::card::set_description(doc, card_id, &strip_image_markdown(body)) {
+            result.errors.push(format!("set_description {card_id}: {e}"));
+        }
 
         // Columns
         let columns = monotask_core::column::list_columns(doc)?;
@@ -1143,17 +1162,6 @@ pub async fn sync_single_card(
     eprintln!("[sync_single_card] done: pulled={} pushed={} errors={:?}", result.pulled, result.pushed, result.errors);
 
     // ── Push: update GitHub issue from CRDT ───────────────────────────────────
-    let all_members: Vec<Vec<u8>> = {
-        let mut m: Vec<Vec<u8>> = match doc.get(ROOT, "actor_card_seq").ok().flatten() {
-            Some((_, seq_map)) => doc.keys(&seq_map)
-                .filter_map(|k| hex::decode(k).ok()).collect(),
-            None => vec![],
-        };
-        if !m.contains(&actor_pk.to_vec()) { m.push(actor_pk.to_vec()); }
-        m
-    };
-    let _ = all_members; // used by create_card in full sync; not needed here
-
     let card = monotask_core::card::read_card(doc, card_id)?;
     let columns = monotask_core::column::list_columns(doc)?;
     let _col_title_to_id: HashMap<String, String> = columns.iter()

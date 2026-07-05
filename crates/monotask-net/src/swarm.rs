@@ -184,7 +184,11 @@ async fn run_inner(
                         if conns.is_empty() {
                             for addr in &bootstrap_peer_addrs {
                                 if let Some(node_addr) = parse_peer_addr(addr) {
-                                    let _ = endpoint.connect(node_addr, PROTOCOL_ALPN).await;
+                                    tokio::spawn(dial_and_sync(
+                                        endpoint.clone(), node_addr, connections.clone(),
+                                        sync_states.clone(), my_spaces.clone(), identity_bytes,
+                                        event_tx.clone(), lifecycle_tx.clone(), storage.clone(),
+                                    ));
                                 }
                             }
                         }

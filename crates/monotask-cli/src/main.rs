@@ -47,7 +47,16 @@ enum Commands {
     Version,
     /// Print full reference documentation for AI agents and automation
     #[command(name = "ai-help")]
-    AiHelp,
+    AiHelp {
+        /// Emit a JSON manifest of the full command tree (introspected live from
+        /// clap), instead of the hand-written markdown doc. Wins over --section.
+        #[arg(long)]
+        json: bool,
+        /// Print only one section of the markdown doc: commands, schemas,
+        /// workflows, or gotchas (case-insensitive). Ignored if --json is set.
+        #[arg(long)]
+        section: Option<String>,
+    },
     /// GitHub Issues integration
     Github {
         #[command(subcommand)]
@@ -97,6 +106,8 @@ enum Commands {
         /// /ip4/1.2.3.4/tcp/7272  — repeat for multiple peers.
         #[arg(long = "peer")]
         peers: Vec<String>,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -463,18 +474,18 @@ enum ChecklistCommands {
 #[derive(clap::Subcommand)]
 enum SpaceCommands {
     /// Create a new Space
-    Create { name: String },
+    Create { name: String, #[arg(long)] json: bool },
     /// List all local Spaces
-    List,
+    List { #[arg(long)] json: bool },
     /// Show details of a Space
-    Info { space_id: String },
+    Info { space_id: String, #[arg(long)] json: bool },
     /// Manage invite tokens for a Space
     Invite {
         #[command(subcommand)]
         cmd: SpaceInviteCommands,
     },
     /// Join a Space via a token or .space file
-    Join { token_or_file: String },
+    Join { token_or_file: String, #[arg(long)] json: bool },
     /// Manage boards associated with a Space
     Boards {
         #[command(subcommand)]
@@ -490,41 +501,41 @@ enum SpaceCommands {
 #[derive(clap::Subcommand)]
 enum SpaceInviteCommands {
     /// Generate a new invite token for a Space
-    Generate { space_id: String },
+    Generate { space_id: String, #[arg(long)] json: bool },
     /// Export an invite as a .space file
-    Export { space_id: String, output_file: String },
+    Export { space_id: String, output_file: String, #[arg(long)] json: bool },
     /// Revoke all active invites for a Space
-    Revoke { space_id: String },
+    Revoke { space_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(clap::Subcommand)]
 enum SpaceBoardsCommands {
     /// Add a board to a Space
-    Add { space_id: String, board_id: String },
+    Add { space_id: String, board_id: String, #[arg(long)] json: bool },
     /// Remove a board from a Space
-    Remove { space_id: String, board_id: String },
+    Remove { space_id: String, board_id: String, #[arg(long)] json: bool },
     /// List boards in a Space
-    List { space_id: String },
+    List { space_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(clap::Subcommand)]
 enum SpaceMembersCommands {
     /// List members of a Space
-    List { space_id: String },
+    List { space_id: String, #[arg(long)] json: bool },
     /// Kick a member from a Space
-    Kick { space_id: String, pubkey: String },
+    Kick { space_id: String, pubkey: String, #[arg(long)] json: bool },
 }
 
 #[derive(clap::Subcommand)]
 enum ProfileCommands {
     /// Show your current profile
-    Show,
+    Show { #[arg(long)] json: bool },
     /// Set your display name
-    SetName { name: String },
+    SetName { name: String, #[arg(long)] json: bool },
     /// Set your avatar from an image file
-    SetAvatar { path: String },
+    SetAvatar { path: String, #[arg(long)] json: bool },
     /// Import an SSH Ed25519 key as your identity
-    ImportSshKey { path: Option<String> },
+    ImportSshKey { path: Option<String>, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
@@ -533,9 +544,10 @@ enum GithubCommands {
     Connect {
         /// The PAT token (ghp_…). Reads from stdin if not given.
         token: Option<String>,
+        #[arg(long)] json: bool,
     },
     /// Show whether a token is saved (no network check)
-    Status,
+    Status { #[arg(long)] json: bool },
     /// Link a board to a GitHub repository
     Link {
         board_id: String,
@@ -546,11 +558,12 @@ enum GithubCommands {
         /// Column ID to treat as "done" (maps to closed issues)
         #[arg(long)]
         done_col: String,
+        #[arg(long)] json: bool,
     },
     /// Unlink a board from GitHub
-    Unlink { board_id: String },
+    Unlink { board_id: String, #[arg(long)] json: bool },
     /// Run a bidirectional sync for a board
-    Sync { board_id: String },
+    Sync { board_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -558,14 +571,16 @@ enum LinearCommands {
     /// Save a Linear API key. Reads from stdin if not given.
     Connect {
         token: Option<String>,
+        #[arg(long)] json: bool,
     },
     /// Show token status and list accessible teams
-    Status,
+    Status { #[arg(long)] json: bool },
     /// List teams accessible with the saved token
-    Teams,
+    Teams { #[arg(long)] json: bool },
     /// List projects for a team
     Projects {
         team_id: String,
+        #[arg(long)] json: bool,
     },
     /// Link a board to a Linear project (creates Monotask columns from Linear workflow states)
     Link {
@@ -579,11 +594,12 @@ enum LinearCommands {
         /// Optional: Monotask column ID to use as the done/completed column
         #[arg(long)]
         done_col: Option<String>,
+        #[arg(long)] json: bool,
     },
     /// Unlink a board from Linear
-    Unlink { board_id: String },
+    Unlink { board_id: String, #[arg(long)] json: bool },
     /// Run a bidirectional sync for a board
-    Sync { board_id: String },
+    Sync { board_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -593,6 +609,11 @@ enum MailCommands {
         /// Google OAuth2 client ID from Google Cloud Console
         #[arg(long)]
         client_id: String,
+        /// Print the auth URL and return immediately instead of waiting for the
+        /// browser redirect (for headless/agent use). Finish with `mail oauth-complete`.
+        #[arg(long)]
+        no_wait: bool,
+        #[arg(long)] json: bool,
     },
     /// Connect Outlook via OAuth2 PKCE (BYO Azure client ID)
     OutlookConnect {
@@ -602,13 +623,29 @@ enum MailCommands {
         /// Azure tenant ID, or "common" for personal+work accounts
         #[arg(long, default_value = "common")]
         tenant_id: String,
+        /// Print the auth URL and return immediately instead of waiting for the
+        /// browser redirect (for headless/agent use). Finish with `mail oauth-complete`.
+        #[arg(long)]
+        no_wait: bool,
+        #[arg(long)] json: bool,
+    },
+    /// Complete an OAuth flow started with --no-wait, given the authorization code
+    OauthComplete {
+        /// Provider: gmail | outlook
+        #[arg(long)]
+        provider: String,
+        /// Authorization code from the `code` query param of the redirect URL
+        #[arg(long)]
+        code: String,
+        #[arg(long)] json: bool,
     },
     /// Show connection status for all providers
-    Status,
+    Status { #[arg(long)] json: bool },
     /// Remove saved credentials for a provider
     Disconnect {
         /// Provider: gmail | outlook
         provider: String,
+        #[arg(long)] json: bool,
     },
     /// Link a board to receive email contacts
     Link {
@@ -631,6 +668,7 @@ enum MailCommands {
         /// Number of recent emails to keep per contact as comments (default 2)
         #[arg(long, default_value = "2")]
         keep_last: u64,
+        #[arg(long)] json: bool,
     },
     /// Connect via IMAP (username + password — works with any provider)
     ImapConnect {
@@ -649,15 +687,16 @@ enum MailCommands {
         /// Mailbox folder to sync (default INBOX)
         #[arg(long, default_value = "INBOX")]
         folder: String,
+        #[arg(long)] json: bool,
     },
     /// Show IMAP credential status and test the connection
-    ImapStatus,
+    ImapStatus { #[arg(long)] json: bool },
     /// Remove saved IMAP credentials
-    ImapDisconnect,
+    ImapDisconnect { #[arg(long)] json: bool },
     /// Unlink a board from email sync
-    Unlink { board_id: String },
+    Unlink { board_id: String, #[arg(long)] json: bool },
     /// Sync emails into a board
-    Sync { board_id: String },
+    Sync { board_id: String, #[arg(long)] json: bool },
 }
 
 #[derive(Subcommand)]
@@ -724,6 +763,8 @@ enum AppCommands {
     Open {
         /// URL to open, e.g. monotask://board/<id> or monotask://board/<id>/card/<id>
         url: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -761,6 +802,48 @@ fn data_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
         let _ = std::fs::rename(&old_dir, &new_dir);
     }
     Ok(new_dir)
+}
+
+/// Save `doc` for `board_id`, recording the pre-mutation snapshot into `undo_stack` so
+/// `board undo` can revert this change. Clears any pending redo history, mirroring the
+/// Tauri app's `push_undo`. Caps history at 20 entries per board per actor.
+fn save_with_undo(
+    storage: &mut monotask_storage::Storage,
+    identity: &monotask_crypto::Identity,
+    board_id: &str,
+    doc: &mut automerge::AutoCommit,
+    action_tag: &str,
+) -> anyhow::Result<()> {
+    let actor_key = identity.public_key_hex();
+    let pre_bytes: Option<Vec<u8>> = storage.conn().query_row(
+        "SELECT automerge_doc FROM boards WHERE board_id = ?1",
+        rusqlite::params![board_id],
+        |r| r.get(0),
+    ).ok();
+    storage.save_board(board_id, doc)?;
+    if let Some(pre_bytes) = pre_bytes {
+        let conn = storage.conn();
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2",
+            rusqlite::params![board_id, actor_key], |r| r.get(0),
+        ).unwrap_or(1);
+        let _ = conn.execute(
+            "DELETE FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2 AND seq IN (
+                SELECT seq FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2 ORDER BY seq ASC LIMIT MAX(0, (SELECT COUNT(*) FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2) - 19)
+             )",
+            rusqlite::params![board_id, actor_key],
+        );
+        let hlc = monotask_core::clock::now();
+        let _ = conn.execute(
+            "INSERT INTO undo_stack (board_id, actor_key, seq, action_tag, inverse_op, hlc) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![board_id, actor_key, seq, action_tag, pre_bytes, hlc],
+        );
+        let _ = conn.execute(
+            "DELETE FROM redo_stack WHERE board_id = ?1 AND actor_key = ?2",
+            rusqlite::params![board_id, actor_key],
+        );
+    }
+    Ok(())
 }
 
 fn load_cli_identity(data_dir: &std::path::Path, conn: &rusqlite::Connection) -> anyhow::Result<monotask_crypto::Identity> {
@@ -803,8 +886,7 @@ fn load_cli_identity(data_dir: &std::path::Path, conn: &rusqlite::Connection) ->
     Ok(id)
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let dir = data_dir(&cli)?;
     let mut storage = monotask_storage::Storage::open(&dir)?;
@@ -858,7 +940,7 @@ async fn main() -> anyhow::Result<()> {
             BoardCommands::Rename { board_id, new_title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::rename_board(&mut doc, &new_title)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"board_id": board_id, "title": new_title})); }
                 else { println!("Renamed board {} to: {}", board_id, new_title); }
             }
@@ -903,13 +985,13 @@ async fn main() -> anyhow::Result<()> {
                     rusqlite::params![board_id, actor_key, redo_seq, action_tag, &cur_bytes, hlc],
                 )?;
                 let mut prev_doc = automerge::AutoCommit::load(&prev_bytes)?;
-                monotask_storage::board::save_board(conn, &board_id, &mut prev_doc)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                storage.save_board(&board_id, &mut prev_doc)?;
+                let conn = storage.conn();
                 conn.execute(
                     "DELETE FROM undo_stack WHERE board_id = ?1 AND actor_key = ?2 AND seq = ?3",
                     rusqlite::params![board_id, actor_key, seq],
                 )?;
-                if json { println!("{}", serde_json::json!({"ok": true})); }
+                if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "action_tag": action_tag})); }
                 else { println!("Undo successful."); }
             }
             BoardCommands::Redo { board_id, json } => {
@@ -940,13 +1022,13 @@ async fn main() -> anyhow::Result<()> {
                     rusqlite::params![board_id, actor_key, undo_seq, action_tag, &cur_bytes, hlc],
                 )?;
                 let mut fwd_doc = automerge::AutoCommit::load(&forward_bytes)?;
-                monotask_storage::board::save_board(conn, &board_id, &mut fwd_doc)
-                    .map_err(|e| anyhow::anyhow!(e))?;
+                storage.save_board(&board_id, &mut fwd_doc)?;
+                let conn = storage.conn();
                 conn.execute(
                     "DELETE FROM redo_stack WHERE board_id = ?1 AND actor_key = ?2 AND seq = ?3",
                     rusqlite::params![board_id, actor_key, seq],
                 )?;
-                if json { println!("{}", serde_json::json!({"ok": true})); }
+                if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "action_tag": action_tag})); }
                 else { println!("Redo successful."); }
             }
             BoardCommands::Schema { board_id, json } => {
@@ -987,7 +1069,7 @@ async fn main() -> anyhow::Result<()> {
             ColumnCommands::Create { board_id, title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 let col_id = monotask_core::column::create_column(&mut doc, &title)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"id": col_id, "board_id": board_id})); }
                 else { println!("Created column: {title} ({col_id})"); }
             }
@@ -1005,14 +1087,14 @@ async fn main() -> anyhow::Result<()> {
             ColumnCommands::Rename { board_id, col_id, new_title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::rename_column_by_id(&mut doc, &col_id, &new_title)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"col_id": col_id, "title": new_title})); }
                 else { println!("Renamed column {} to: {}", col_id, new_title); }
             }
             ColumnCommands::Delete { board_id, col_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::delete_column(&mut doc, &col_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"deleted": col_id})); }
                 else { println!("Deleted column {col_id}"); }
             }
@@ -1031,7 +1113,7 @@ async fn main() -> anyhow::Result<()> {
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     resolved_fields.push((def, value));
                 }
-                let actor_pk = vec![0u8; 32];
+                let actor_pk = identity.public_key_bytes().to_vec();
                 let members = vec![actor_pk.clone()];
                 let card = monotask_core::card::create_card(&mut doc, &col_id, &title, &actor_pk, &members)?;
                 // Write explicit fields first, then apply auto-apply defaults (explicit beats default)
@@ -1039,7 +1121,7 @@ async fn main() -> anyhow::Result<()> {
                     monotask_core::field::set_card_field(&mut doc, &card.id, &def.id, value)?;
                 }
                 monotask_core::field::apply_default_fields(&mut doc, &card.id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     let number_display = card.number.as_ref().map(|n| n.to_display());
                     println!("{}", serde_json::json!({"id": card.id, "title": card.title, "board_id": board_id, "number": number_display}));
@@ -1167,21 +1249,21 @@ async fn main() -> anyhow::Result<()> {
             CardCommands::Rename { board_id, card_id, new_title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::rename_card(&mut doc, &card_id, &new_title)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "title": new_title})); }
                 else { println!("Renamed card {} to: {}", card_id, new_title); }
             }
             CardCommands::Delete { board_id, card_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::delete_card(&mut doc, &card_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"deleted": card_id})); }
                 else { println!("Deleted card {card_id}"); }
             }
             CardCommands::Archive { board_id, card_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::archive_card(&mut doc, &card_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"archived": card_id})); }
                 else { println!("Archived card {card_id}"); }
             }
@@ -1190,7 +1272,7 @@ async fn main() -> anyhow::Result<()> {
                 let actor_pk = identity.to_secret_bytes().to_vec();
                 let members = vec![actor_pk.clone()];
                 let new_card = monotask_core::card::copy_card(&mut doc, &card_id, &col_id, &actor_pk, &members)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"id": new_card.id, "title": new_card.title})); }
                 else { println!("Copied card to: {} ({})", new_card.title, new_card.id); }
             }
@@ -1224,14 +1306,14 @@ async fn main() -> anyhow::Result<()> {
                     found.ok_or_else(|| anyhow::anyhow!("card {} not found in any column", card_id))?
                 };
                 monotask_core::column::move_card(&mut doc, &card_id, &from_col_id, &to_col_id)?;
-                storage.save_board(&board_id, &mut doc)?;
-                if json { println!("{}", serde_json::json!({"card_id": card_id, "to_col_id": to_col_id})); }
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
+                if json { println!("{}", serde_json::json!({"card_id": card_id, "from_col_id": from_col_id, "to_col_id": to_col_id})); }
                 else { println!("Moved card {} to column {}", card_id, to_col_id); }
             }
             CardCommands::SetDescription { board_id, card_id, text, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_description(&mut doc, &card_id, &text)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "description": text})); }
                 else { println!("Updated description for card {card_id}"); }
             }
@@ -1239,7 +1321,7 @@ async fn main() -> anyhow::Result<()> {
                 let color_arg = if color == "none" { "" } else { &color };
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_cover_color(&mut doc, &card_id, color_arg)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "color": color_arg})); }
                 else { println!("Set cover color for card {card_id}"); }
             }
@@ -1247,7 +1329,7 @@ async fn main() -> anyhow::Result<()> {
                 let due: Option<&str> = if date == "none" { None } else { Some(&date) };
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_due_date(&mut doc, &card_id, due)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "due_date": due})); }
                 else { println!("Set due date for card {card_id}"); }
             }
@@ -1255,7 +1337,7 @@ async fn main() -> anyhow::Result<()> {
                 let pri = if priority == "none" { "" } else { &priority };
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_priority(&mut doc, &card_id, pri)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "priority": pri})); }
                 else { println!("Set priority for card {card_id}"); }
             }
@@ -1265,7 +1347,7 @@ async fn main() -> anyhow::Result<()> {
                 let card = monotask_core::card::read_card(&doc, &card_id)?;
                 let effort = card.effort.unwrap_or(0);
                 let priority = monotask_core::card::compute_priority(value, effort);
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "impact": value, "effort": effort, "priority": priority})); }
                 else { println!("Impact={value}, Effort={effort} → Priority={priority}"); }
             }
@@ -1275,7 +1357,7 @@ async fn main() -> anyhow::Result<()> {
                 let card = monotask_core::card::read_card(&doc, &card_id)?;
                 let impact = card.impact.unwrap_or(0);
                 let priority = monotask_core::card::compute_priority(impact, value);
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "impact": impact, "effort": value, "priority": priority})); }
                 else { println!("Impact={impact}, Effort={value} → Priority={priority}"); }
             }
@@ -1283,7 +1365,7 @@ async fn main() -> anyhow::Result<()> {
                 let v = if clear { None } else { value };
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_direct_priority(&mut doc, &card_id, v)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "direct_priority": v})); }
                 else if let Some(p) = v { println!("Priority={p}/10"); }
                 else { println!("Priority cleared"); }
@@ -1291,7 +1373,7 @@ async fn main() -> anyhow::Result<()> {
             CardCommands::ClearPriority { board_id, card_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::clear_priority_fields(&mut doc, &card_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "cleared": true})); }
                 else { println!("Impact, effort and priority cleared for card {card_id}"); }
             }
@@ -1299,7 +1381,7 @@ async fn main() -> anyhow::Result<()> {
                 let pk = if pubkey == "none" { "" } else { &pubkey };
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::set_assignee(&mut doc, &card_id, pk)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "assignee": pk})); }
                 else { println!("Set assignee for card {card_id}"); }
             }
@@ -1321,7 +1403,7 @@ async fn main() -> anyhow::Result<()> {
                 let id = &id_raw[..6];
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::card::attach_image(&mut doc, &card_id, id, &name, mime, &data_b64)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"id": id, "name": name, "mime": mime, "token": format!("img:{id}")}));
                 } else {
@@ -1364,14 +1446,14 @@ async fn main() -> anyhow::Result<()> {
                 LabelCommands::Add { board_id, card_id, label, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::add_label(&mut doc, &card_id, &label)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json { println!("{}", serde_json::json!({"card_id": card_id, "label": label})); }
                     else { println!("Added label '{}' to card {}", label, card_id); }
                 }
                 LabelCommands::Remove { board_id, card_id, label, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::remove_label(&mut doc, &card_id, &label)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json { println!("{}", serde_json::json!({"card_id": card_id, "removed_label": label})); }
                     else { println!("Removed label '{}' from card {}", label, card_id); }
                 }
@@ -1387,7 +1469,7 @@ async fn main() -> anyhow::Result<()> {
             },
             CardCommands::Subtask { cmd } => match cmd {
                 SubtaskCommands::Add { parent_board_id, parent_card_id, child_board_id, col_id, title, json } => {
-                    let actor_pk = vec![0u8; 32];
+                    let actor_pk = identity.public_key_bytes().to_vec();
                     let members = vec![actor_pk.clone()];
                     if parent_board_id == child_board_id {
                         let mut doc = storage.load_board(&child_board_id)?;
@@ -1434,7 +1516,7 @@ async fn main() -> anyhow::Result<()> {
                 monotask_core::field::validate_field_value(&def, &value)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 monotask_core::field::set_card_field(&mut doc, &card_id, &def.id, &value)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"card_id": card_id, "field_id": def.id, "field_name": def.name, "value": value})); }
                 else { println!("Set {}: {} on card {}", def.name, value, card_id); }
             }
@@ -1461,7 +1543,7 @@ async fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("{e}"))?
                     .ok_or_else(|| anyhow::anyhow!("field '{}' not found on this board", field_ref))?;
                 monotask_core::field::clear_card_field(&mut doc, &card_id, &def.id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"cleared": def.id, "card_id": card_id})); }
                 else { println!("Cleared {} from card {}", def.name, card_id); }
             }
@@ -1527,7 +1609,7 @@ async fn main() -> anyhow::Result<()> {
                 let (card_id, was_created) = if let Some(eid) = existing_card_id {
                     (eid, false)
                 } else {
-                    let actor_pk = vec![0u8; 32];
+                    let actor_pk = identity.public_key_bytes().to_vec();
                     let members = vec![actor_pk.clone()];
                     let card = monotask_core::card::create_card(&mut doc, &col_id, &title, &actor_pk, &members)?;
                     // Set match field value on new card
@@ -1540,7 +1622,7 @@ async fn main() -> anyhow::Result<()> {
                 if was_created {
                     monotask_core::field::apply_default_fields(&mut doc, &card_id)?;
                 }
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"card_id": card_id, "created": was_created, "board_id": board_id}));
                 } else if was_created {
@@ -1556,7 +1638,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::add_prerequisite_ref(&mut doc, &card_id, &prereq_board_id, &prereq_card_id)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json { println!("{}", serde_json::json!({"board_id": board_id, "card_id": card_id, "prereq_board_id": prereq_board_id, "prereq_card_id": prereq_card_id})); }
                     else { println!("Added prerequisite {} (board: {}) to card {} (board: {})", prereq_card_id, prereq_board_id, card_id, board_id); }
                 },
@@ -1578,8 +1660,8 @@ async fn main() -> anyhow::Result<()> {
                 PrerequisiteCommands::Remove { board_id, card_id, prereq_board_id, prereq_card_id, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::remove_prerequisite_ref(&mut doc, &card_id, &prereq_board_id, &prereq_card_id)?;
-                    storage.save_board(&board_id, &mut doc)?;
-                    if json { println!("{}", serde_json::json!({"ok": true})); }
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
+                    if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "card_id": card_id, "prereq_board_id": prereq_board_id, "prereq_card_id": prereq_card_id})); }
                     else { println!("Removed prerequisite {} (board: {}) from card {} (board: {})", prereq_card_id, prereq_board_id, card_id, board_id); }
                 },
             },
@@ -1587,7 +1669,7 @@ async fn main() -> anyhow::Result<()> {
                 LinkCommands::Add { board_id, card_id, target_board_id, target_card_id, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::add_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "card_id": card_id, "target_board_id": target_board_id, "target_card_id": target_card_id})); }
                     else { println!("Linked {card_id} → {target_card_id} (board: {target_board_id})"); }
                 }
@@ -1606,8 +1688,8 @@ async fn main() -> anyhow::Result<()> {
                 LinkCommands::Remove { board_id, card_id, target_board_id, target_card_id, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::card::remove_card_link(&mut doc, &card_id, &target_board_id, &target_card_id)?;
-                    storage.save_board(&board_id, &mut doc)?;
-                    if json { println!("{}", serde_json::json!({"ok": true})); }
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
+                    if json { println!("{}", serde_json::json!({"ok": true, "board_id": board_id, "card_id": card_id, "target_board_id": target_board_id, "target_card_id": target_card_id})); }
                     else { println!("Removed link {card_id} → {target_card_id}"); }
                 }
             },
@@ -1638,7 +1720,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut doc = storage.load_board(&board_id)?;
                     let author_key = identity.public_key_hex();
                     let comment = monotask_core::comment::add_comment(&mut doc, &card_id, &text, &author_key, None, None, None)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&comment)?);
                     } else {
@@ -1660,7 +1742,7 @@ async fn main() -> anyhow::Result<()> {
                 CommentCommands::Delete { board_id, card_id, comment_id, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::comment::delete_comment(&mut doc, &card_id, &comment_id)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json {
                         println!("{}", serde_json::json!({"deleted": comment_id}));
                     } else {
@@ -1670,7 +1752,7 @@ async fn main() -> anyhow::Result<()> {
                 CommentCommands::Edit { board_id, card_id, comment_id, new_text, json } => {
                     let mut doc = storage.load_board(&board_id)?;
                     monotask_core::comment::edit_comment(&mut doc, &card_id, &comment_id, &new_text)?;
-                    storage.save_board(&board_id, &mut doc)?;
+                    save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                     if json {
                         println!("{}", serde_json::json!({"edited": comment_id}));
                     } else {
@@ -1683,7 +1765,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::Add { board_id, card_id, title, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 let cl = monotask_core::checklist::add_checklist(&mut doc, &card_id, &title)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&cl)?);
                 } else {
@@ -1693,7 +1775,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::ItemAdd { board_id, card_id, checklist_id, text, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 let item = monotask_core::checklist::add_checklist_item(&mut doc, &card_id, &checklist_id, &text)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&item)?);
                 } else {
@@ -1703,7 +1785,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::ItemCheck { board_id, card_id, checklist_id, item_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::checklist::set_item_checked(&mut doc, &card_id, &checklist_id, &item_id, true)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"checked": true, "item_id": item_id}));
                 } else {
@@ -1713,7 +1795,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::ItemUncheck { board_id, card_id, checklist_id, item_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::checklist::set_item_checked(&mut doc, &card_id, &checklist_id, &item_id, false)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"checked": false, "item_id": item_id}));
                 } else {
@@ -1723,7 +1805,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::ItemDelete { board_id, card_id, checklist_id, item_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::checklist::delete_checklist_item(&mut doc, &card_id, &checklist_id, &item_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"deleted_item": item_id}));
                 } else {
@@ -1733,7 +1815,7 @@ async fn main() -> anyhow::Result<()> {
             ChecklistCommands::Delete { board_id, card_id, checklist_id, json } => {
                 let mut doc = storage.load_board(&board_id)?;
                 monotask_core::checklist::delete_checklist(&mut doc, &card_id, &checklist_id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({"deleted_checklist": checklist_id}));
                 } else {
@@ -1748,7 +1830,7 @@ async fn main() -> anyhow::Result<()> {
                     .ok_or_else(|| anyhow::anyhow!("unknown field type '{}'. Valid types: text, number, date, select, multi_select, checkbox", field_type))?;
                 let mut doc = storage.load_board(&board_id)?;
                 let def = monotask_core::field::create_field(&mut doc, &name, ft, options, default_value, auto_apply)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json {
                     println!("{}", serde_json::json!({
                         "id": def.id, "name": def.name, "type": def.field_type.as_str(),
@@ -1786,7 +1868,7 @@ async fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("{e}"))?
                     .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
                 monotask_core::field::rename_field(&mut doc, &def.id, &new_name)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"field_id": def.id, "name": new_name})); }
                 else { println!("Renamed field {} to: {}", def.id, new_name); }
             }
@@ -1796,7 +1878,7 @@ async fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("{e}"))?
                     .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
                 monotask_core::field::archive_field(&mut doc, &def.id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"archived": def.id})); }
                 else { println!("Archived field {} ({})", def.name, def.id); }
             }
@@ -1806,7 +1888,7 @@ async fn main() -> anyhow::Result<()> {
                     .map_err(|e| anyhow::anyhow!("{e}"))?
                     .ok_or_else(|| anyhow::anyhow!("field '{}' not found", field_ref))?;
                 let count = monotask_core::field::backfill_field_defaults(&mut doc, &def.id)?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"field_id": def.id, "updated_count": count})); }
                 else { println!("Backfilled {} cards with default value for '{}'", count, def.name); }
             }
@@ -1820,7 +1902,7 @@ async fn main() -> anyhow::Result<()> {
                     default_value.as_deref(),
                     auto_apply,
                 )?;
-                storage.save_board(&board_id, &mut doc)?;
+                save_with_undo(&mut storage, &identity, &board_id, &mut doc, "cli_change")?;
                 if json { println!("{}", serde_json::json!({"field_id": def.id, "ok": true})); }
                 else { println!("Updated field {}", def.name); }
             }
@@ -1828,14 +1910,15 @@ async fn main() -> anyhow::Result<()> {
         Commands::Space { cmd } => handle_space(cmd, &mut storage, &identity)?,
         Commands::Profile { cmd } => handle_profile(cmd, &mut storage, &identity, &dir)?,
         Commands::Version => println!("monotaskcli {}", env!("CARGO_PKG_VERSION")),
-        Commands::AiHelp => print_ai_help(),
+        Commands::AiHelp { json, section } => print_ai_help(json, section)?,
         Commands::App { cmd } => match cmd {
-            AppCommands::Open { url } => {
+            AppCommands::Open { url, json } => {
                 if !url.starts_with("monotask://") {
                     anyhow::bail!("URL must start with monotask://");
                 }
                 open_url(&url);
-                println!("Opening: {}", url);
+                if json { println!("{}", serde_json::json!({"opened": url})); }
+                else { println!("Opening: {}", url); }
             }
         },
         Commands::Chat { cmd } => {
@@ -1889,8 +1972,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         },
-        Commands::Sync { detach, stop, status, port, peers } => {
-            cmd_sync(dir, detach, stop, status, port, peers).await?;
+        Commands::Sync { detach, stop, status, port, peers, json } => {
+            cmd_sync(dir, detach, stop, status, port, peers, json).await?;
         }
         Commands::Github { cmd } => {
             cmd_github(cmd, &dir, &mut storage, &identity).await?;
@@ -1905,6 +1988,56 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Best-effort classification of an error message into a small, stable set of
+/// `kind` categories for `--json` error output. Not a full typed error enum --
+/// just enough for an AI agent to branch on without parsing English prose.
+fn classify_error(msg: &str) -> &'static str {
+    let lower = msg.to_lowercase();
+    if lower.contains("not found") {
+        "not_found"
+    } else if lower.contains("invalid") || lower.contains("parse") || lower.contains("expected") || lower.contains("missing") {
+        "invalid_input"
+    } else if lower.contains("no such file")
+        || lower.contains("permission denied")
+        || lower.contains("connection")
+        || lower.contains("network")
+        || lower.contains("os error")
+        || lower.contains("io error")
+    {
+        "io_error"
+    } else {
+        "error"
+    }
+}
+
+/// Maps a `classify_error` kind to a small, stable numeric process exit code
+/// so scripts/agents can branch without parsing the error message or JSON.
+fn exit_code_for_kind(kind: &str) -> i32 {
+    match kind {
+        "not_found" => 2,
+        "invalid_input" => 3,
+        "io_error" => 4,
+        _ => 1,
+    }
+}
+
+fn main() {
+    let json = std::env::args().any(|a| a == "--json");
+    let result = tokio::runtime::Runtime::new()
+        .expect("failed to start tokio runtime")
+        .block_on(run());
+    if let Err(e) = result {
+        let message = e.to_string();
+        let kind = classify_error(&message);
+        if json {
+            println!("{}", serde_json::json!({"ok": false, "error": message, "kind": kind}));
+        } else {
+            eprintln!("Error: {e:?}");
+        }
+        std::process::exit(exit_code_for_kind(kind));
+    }
+}
+
 async fn cmd_sync(
     data_dir: std::path::PathBuf,
     detach: bool,
@@ -1912,6 +2045,7 @@ async fn cmd_sync(
     status: bool,
     port: u16,
     peers: Vec<String>,
+    json: bool,
 ) -> anyhow::Result<()> {
     use monotask_net::{NetworkHandle, NetConfig, NetEvent};
     use monotask_storage::Storage;
@@ -1927,14 +2061,22 @@ async fn cmd_sync(
         unsafe { libc::kill(pid as i32, libc::SIGTERM); }
         #[cfg(windows)]
         { std::process::Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]).status().ok(); }
-        println!("Stopped sync daemon (PID {pid})");
+        if json { println!("{}", serde_json::json!({"stopped": true, "pid": pid})); }
+        else { println!("Stopped sync daemon (PID {pid})"); }
         return Ok(());
     }
 
     if status {
         match std::fs::read_to_string(&pid_file) {
-            Ok(pid) => println!("Sync daemon running (PID {})", pid.trim()),
-            Err(_) => println!("Sync daemon not running"),
+            Ok(pid) => {
+                let pid = pid.trim().to_string();
+                if json { println!("{}", serde_json::json!({"running": true, "pid": pid})); }
+                else { println!("Sync daemon running (PID {})", pid); }
+            }
+            Err(_) => {
+                if json { println!("{}", serde_json::json!({"running": false})); }
+                else { println!("Sync daemon not running"); }
+            }
         }
         return Ok(());
     }
@@ -1947,7 +2089,8 @@ async fn cmd_sync(
             .args(&args[1..])
             .spawn()?;
         std::fs::write(&pid_file, child.id().to_string())?;
-        println!("Sync daemon started (PID {})", child.id());
+        if json { println!("{}", serde_json::json!({"started": true, "pid": child.id()})); }
+        else { println!("Sync daemon started (PID {})", child.id()); }
         return Ok(());
     }
 
@@ -1990,19 +2133,28 @@ async fn cmd_sync(
     let sync_trigger = handle.sync_trigger();
     let mut poll_interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
-    println!("Sync daemon running. Press Ctrl+C to stop.");
+    if json { println!("{}", serde_json::json!({"event": "daemon_running"})); }
+    else { println!("Sync daemon running. Press Ctrl+C to stop."); }
     loop {
         tokio::select! {
             Some(event) = async { if let Some(rx) = handle.event_rx.as_mut() { rx.recv().await } else { None } } => {
                 match event {
-                    NetEvent::PeerConnected { peer_id } =>
-                        println!("connected: {peer_id}"),
-                    NetEvent::PeerDisconnected { peer_id } =>
-                        println!("disconnected: {peer_id}"),
-                    NetEvent::BoardSynced { board_id, peer_id } =>
-                        println!("synced board {board_id} with {peer_id}"),
-                    NetEvent::SyncError { board_id, error } =>
-                        println!("sync error {board_id}: {error}"),
+                    NetEvent::PeerConnected { peer_id } => {
+                        if json { println!("{}", serde_json::json!({"event": "peer_connected", "peer_id": peer_id})); }
+                        else { println!("connected: {peer_id}"); }
+                    }
+                    NetEvent::PeerDisconnected { peer_id } => {
+                        if json { println!("{}", serde_json::json!({"event": "peer_disconnected", "peer_id": peer_id})); }
+                        else { println!("disconnected: {peer_id}"); }
+                    }
+                    NetEvent::BoardSynced { board_id, peer_id } => {
+                        if json { println!("{}", serde_json::json!({"event": "board_synced", "board_id": board_id, "peer_id": peer_id})); }
+                        else { println!("synced board {board_id} with {peer_id}"); }
+                    }
+                    NetEvent::SyncError { board_id, error } => {
+                        if json { println!("{}", serde_json::json!({"event": "sync_error", "board_id": board_id, "error": error})); }
+                        else { println!("sync error {board_id}: {error}"); }
+                    }
                 }
             }
             _ = poll_interval.tick() => {
@@ -2020,7 +2172,8 @@ async fn cmd_sync(
                 for (board_id, ts) in &current {
                     let old_ts = last_seen.get(board_id).copied().unwrap_or(0);
                     if *ts > old_ts {
-                        println!("board {board_id:.8} changed (ts={ts}), triggering sync");
+                        if json { println!("{}", serde_json::json!({"event": "board_changed", "board_id": board_id, "ts": ts})); }
+                        else { println!("board {board_id:.8} changed (ts={ts}), triggering sync"); }
                         sync_trigger.trigger_sync(board_id.clone()).await;
                     }
                 }
@@ -2035,7 +2188,7 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
     use monotask_storage::space as ss;
 
     match cmd {
-        SpaceCommands::Create { name } => {
+        SpaceCommands::Create { name, json } => {
             let space_id = uuid::Uuid::new_v4().to_string();
             let owner_pubkey = identity.public_key_hex();
             let mut doc = cs::create_space_doc(&name, &owner_pubkey)?;
@@ -2054,11 +2207,15 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
                 kicked: false,
             };
             ss::upsert_member(storage.conn(), &space_id, &owner_member)?;
-            println!("Created Space: {} ({})", name, space_id);
+            if json { println!("{}", serde_json::json!({"id": space_id, "name": name, "owner_pubkey": owner_pubkey})); }
+            else { println!("Created Space: {} ({})", name, space_id); }
         }
-        SpaceCommands::List => {
+        SpaceCommands::List { json } => {
             let spaces = ss::list_spaces(storage.conn())?;
-            if spaces.is_empty() {
+            if json {
+                let out: Vec<_> = spaces.iter().map(|s| serde_json::json!({"id": s.id, "name": s.name, "member_count": s.member_count})).collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else if spaces.is_empty() {
                 println!("No spaces found.");
             } else {
                 for s in spaces {
@@ -2066,31 +2223,42 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
                 }
             }
         }
-        SpaceCommands::Info { space_id } => {
+        SpaceCommands::Info { space_id, json } => {
             let space = ss::get_space(storage.conn(), &space_id)?;
-            println!("Space: {} ({})", space.name, space.id);
-            println!("Owner: {}", space.owner_pubkey);
-            println!("Members ({}):", space.members.len());
-            for m in &space.members {
-                let name = m.display_name.as_deref().unwrap_or("(unnamed)");
-                let kicked = if m.kicked { " [kicked]" } else { "" };
-                println!("  {}  {}{}", &m.pubkey[..16], name, kicked);
-            }
-            println!("Boards ({}):", space.boards.len());
-            for b in &space.boards {
-                println!("  {}", b);
+            if json {
+                let members_json: Vec<_> = space.members.iter().map(|m| serde_json::json!({
+                    "pubkey": m.pubkey, "display_name": m.display_name, "kicked": m.kicked,
+                })).collect();
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "id": space.id, "name": space.name, "owner_pubkey": space.owner_pubkey,
+                    "members": members_json, "boards": space.boards,
+                }))?);
+            } else {
+                println!("Space: {} ({})", space.name, space.id);
+                println!("Owner: {}", space.owner_pubkey);
+                println!("Members ({}):", space.members.len());
+                for m in &space.members {
+                    let name = m.display_name.as_deref().unwrap_or("(unnamed)");
+                    let kicked = if m.kicked { " [kicked]" } else { "" };
+                    println!("  {}  {}{}", &m.pubkey[..16], name, kicked);
+                }
+                println!("Boards ({}):", space.boards.len());
+                for b in &space.boards {
+                    println!("  {}", b);
+                }
             }
         }
         SpaceCommands::Invite { cmd } => match cmd {
-            SpaceInviteCommands::Generate { space_id } => {
+            SpaceInviteCommands::Generate { space_id, json } => {
                 ss::revoke_all_invites(storage.conn(), &space_id)?;
                 let doc_bytes = ss::load_space_doc(storage.conn(), &space_id)?;
                 let token = monotask_crypto::generate_invite_token(&space_id, identity, Some(&doc_bytes))?;
                 let meta = monotask_crypto::verify_invite_token_signature(&token)?;
                 ss::insert_invite(storage.conn(), &meta.token_hash, &token, &space_id, None)?;
-                println!("{}", token);
+                if json { println!("{}", serde_json::json!({"token": token, "space_id": space_id})); }
+                else { println!("{}", token); }
             }
-            SpaceInviteCommands::Export { space_id, output_file } => {
+            SpaceInviteCommands::Export { space_id, output_file, json } => {
                 ss::revoke_all_invites(storage.conn(), &space_id)?;
                 let doc_bytes = ss::load_space_doc(storage.conn(), &space_id)?;
                 let token = monotask_crypto::generate_invite_token(&space_id, identity, Some(&doc_bytes))?;
@@ -2105,14 +2273,16 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
                     "space_doc": space_doc_b64,
                 });
                 std::fs::write(&output_file, serde_json::to_string_pretty(&payload)?)?;
-                println!("Exported invite to {}", output_file);
+                if json { println!("{}", serde_json::json!({"exported": output_file, "space_id": space_id})); }
+                else { println!("Exported invite to {}", output_file); }
             }
-            SpaceInviteCommands::Revoke { space_id } => {
+            SpaceInviteCommands::Revoke { space_id, json } => {
                 ss::revoke_all_invites(storage.conn(), &space_id)?;
-                println!("Revoked all active invites for {}", space_id);
+                if json { println!("{}", serde_json::json!({"revoked": true, "space_id": space_id})); }
+                else { println!("Revoked all active invites for {}", space_id); }
             }
         },
-        SpaceCommands::Join { token_or_file } => {
+        SpaceCommands::Join { token_or_file, json } => {
             let local_pubkey = identity.public_key_hex();
             let (token, _hint_name, file_doc_opt) = parse_token_or_file(&token_or_file)?;
             let meta = monotask_crypto::verify_invite_token_signature(&token)?;
@@ -2133,7 +2303,10 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
                         ss::rename_space(storage.conn(), &meta.space_id, &new_name)?;
                         for m in &members { let _ = ss::upsert_member(storage.conn(), &meta.space_id, m); }
                         for b in &boards { let _ = ss::add_board(storage.conn(), &meta.space_id, b); }
-                        println!("Updated Space: {} ({})", new_name, meta.space_id);
+                        if json { println!("{}", serde_json::json!({"id": meta.space_id, "name": new_name, "updated": true})); }
+                        else { println!("Updated Space: {} ({})", new_name, meta.space_id); }
+                    } else if json {
+                        println!("{}", serde_json::json!({"id": meta.space_id, "name": existing.name, "already_member": true}));
                     } else {
                         println!("Already a member of Space: {} ({})", existing.name, meta.space_id);
                     }
@@ -2183,46 +2356,58 @@ fn handle_space(cmd: SpaceCommands, storage: &mut monotask_storage::Storage, ide
             for b in &boards {
                 let _ = ss::add_board(storage.conn(), &meta.space_id, b);
             }
-            println!("Joined Space: {} ({})", space_name, meta.space_id);
+            if json { println!("{}", serde_json::json!({"id": meta.space_id, "name": space_name, "joined": true})); }
+            else { println!("Joined Space: {} ({})", space_name, meta.space_id); }
         }
         SpaceCommands::Boards { cmd } => match cmd {
-            SpaceBoardsCommands::Add { space_id, board_id } => {
+            SpaceBoardsCommands::Add { space_id, board_id, json } => {
                 let bytes = ss::load_space_doc(storage.conn(), &space_id)?;
                 let mut doc = automerge::AutoCommit::load(&bytes)?;
                 cs::add_board_ref(&mut doc, &board_id)?;
                 ss::update_space_doc(storage.conn(), &space_id, &doc.save())?;
                 ss::add_board(storage.conn(), &space_id, &board_id)?;
-                println!("Added board {} to Space {}", board_id, space_id);
+                if json { println!("{}", serde_json::json!({"space_id": space_id, "board_id": board_id})); }
+                else { println!("Added board {} to Space {}", board_id, space_id); }
             }
-            SpaceBoardsCommands::Remove { space_id, board_id } => {
+            SpaceBoardsCommands::Remove { space_id, board_id, json } => {
                 let bytes = ss::load_space_doc(storage.conn(), &space_id)?;
                 let mut doc = automerge::AutoCommit::load(&bytes)?;
                 cs::remove_board_ref(&mut doc, &board_id)?;
                 ss::update_space_doc(storage.conn(), &space_id, &doc.save())?;
                 ss::remove_board(storage.conn(), &space_id, &board_id)?;
-                println!("Removed board {} from Space {}", board_id, space_id);
+                if json { println!("{}", serde_json::json!({"removed": true, "space_id": space_id, "board_id": board_id})); }
+                else { println!("Removed board {} from Space {}", board_id, space_id); }
             }
-            SpaceBoardsCommands::List { space_id } => {
+            SpaceBoardsCommands::List { space_id, json } => {
                 let space = ss::get_space(storage.conn(), &space_id)?;
-                for b in &space.boards { println!("{}", b); }
+                if json { println!("{}", serde_json::to_string_pretty(&space.boards)?); }
+                else { for b in &space.boards { println!("{}", b); } }
             }
         },
         SpaceCommands::Members { cmd } => match cmd {
-            SpaceMembersCommands::List { space_id } => {
+            SpaceMembersCommands::List { space_id, json } => {
                 let space = ss::get_space(storage.conn(), &space_id)?;
-                for m in &space.members {
-                    let name = m.display_name.as_deref().unwrap_or("(unnamed)");
-                    let kicked = if m.kicked { " [kicked]" } else { "" };
-                    println!("{}  {}{}", m.pubkey, name, kicked);
+                if json {
+                    let out: Vec<_> = space.members.iter().map(|m| serde_json::json!({
+                        "pubkey": m.pubkey, "display_name": m.display_name, "kicked": m.kicked,
+                    })).collect();
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    for m in &space.members {
+                        let name = m.display_name.as_deref().unwrap_or("(unnamed)");
+                        let kicked = if m.kicked { " [kicked]" } else { "" };
+                        println!("{}  {}{}", m.pubkey, name, kicked);
+                    }
                 }
             }
-            SpaceMembersCommands::Kick { space_id, pubkey } => {
+            SpaceMembersCommands::Kick { space_id, pubkey, json } => {
                 let bytes = ss::load_space_doc(storage.conn(), &space_id)?;
                 let mut doc = automerge::AutoCommit::load(&bytes)?;
                 cs::kick_member(&mut doc, &pubkey)?;
                 ss::update_space_doc(storage.conn(), &space_id, &doc.save())?;
                 ss::set_member_kicked(storage.conn(), &space_id, &pubkey, true)?;
-                println!("Kicked {} from Space {}", pubkey, space_id);
+                if json { println!("{}", serde_json::json!({"kicked": true, "space_id": space_id, "pubkey": pubkey})); }
+                else { println!("Kicked {} from Space {}", pubkey, space_id); }
             }
         },
     }
@@ -2233,7 +2418,7 @@ fn handle_profile(cmd: ProfileCommands, storage: &mut monotask_storage::Storage,
     use monotask_storage::space as ss;
 
     match cmd {
-        ProfileCommands::Show => {
+        ProfileCommands::Show { json } => {
             let profile = ss::get_profile(storage.conn())?
                 .unwrap_or_else(|| monotask_core::space::UserProfile {
                     pubkey: identity.public_key_hex(),
@@ -2245,12 +2430,21 @@ fn handle_profile(cmd: ProfileCommands, storage: &mut monotask_storage::Storage,
                     presence: None,
                     ssh_key_path: None,
                 });
-            println!("Pubkey:       {}", profile.pubkey);
-            println!("Display name: {}", profile.display_name.as_deref().unwrap_or("(not set)"));
-            println!("Avatar:       {}", if profile.avatar_blob.is_some() { "set" } else { "not set" });
-            println!("SSH key path: {}", profile.ssh_key_path.as_deref().unwrap_or("(auto-generated)"));
+            if json {
+                println!("{}", serde_json::json!({
+                    "pubkey": profile.pubkey,
+                    "display_name": profile.display_name,
+                    "avatar_set": profile.avatar_blob.is_some(),
+                    "ssh_key_path": profile.ssh_key_path,
+                }));
+            } else {
+                println!("Pubkey:       {}", profile.pubkey);
+                println!("Display name: {}", profile.display_name.as_deref().unwrap_or("(not set)"));
+                println!("Avatar:       {}", if profile.avatar_blob.is_some() { "set" } else { "not set" });
+                println!("SSH key path: {}", profile.ssh_key_path.as_deref().unwrap_or("(auto-generated)"));
+            }
         }
-        ProfileCommands::SetName { name } => {
+        ProfileCommands::SetName { name, json } => {
             let existing = ss::get_profile(storage.conn())?.unwrap_or_else(|| monotask_core::space::UserProfile {
                 pubkey: identity.public_key_hex(),
                 display_name: None,
@@ -2265,9 +2459,10 @@ fn handle_profile(cmd: ProfileCommands, storage: &mut monotask_storage::Storage,
                 display_name: Some(name.clone()),
                 ..existing
             })?;
-            println!("Display name set to: {}", name);
+            if json { println!("{}", serde_json::json!({"display_name": name})); }
+            else { println!("Display name set to: {}", name); }
         }
-        ProfileCommands::SetAvatar { path } => {
+        ProfileCommands::SetAvatar { path, json } => {
             let avatar_blob = std::fs::read(&path)?;
             let existing = ss::get_profile(storage.conn())?.unwrap_or_else(|| monotask_core::space::UserProfile {
                 pubkey: identity.public_key_hex(),
@@ -2283,9 +2478,10 @@ fn handle_profile(cmd: ProfileCommands, storage: &mut monotask_storage::Storage,
                 avatar_blob: Some(avatar_blob),
                 ..existing
             })?;
-            println!("Avatar set from {}", path);
+            if json { println!("{}", serde_json::json!({"avatar_set_from": path})); }
+            else { println!("Avatar set from {}", path); }
         }
-        ProfileCommands::ImportSshKey { path } => {
+        ProfileCommands::ImportSshKey { path, json } => {
             let path_ref = path.as_deref().map(std::path::Path::new);
             let new_identity = monotask_crypto::import_ssh_identity(path_ref)?;
             let pubkey = new_identity.public_key_hex();
@@ -2302,7 +2498,8 @@ fn handle_profile(cmd: ProfileCommands, storage: &mut monotask_storage::Storage,
                 presence: existing.as_ref().and_then(|p| p.presence.clone()),
                 ssh_key_path: path,
             })?;
-            println!("Imported SSH key. New pubkey: {}", pubkey);
+            if json { println!("{}", serde_json::json!({"pubkey": pubkey})); }
+            else { println!("Imported SSH key. New pubkey: {}", pubkey); }
         }
     }
     Ok(())
@@ -2335,9 +2532,12 @@ async fn cmd_github(
 ) -> anyhow::Result<()> {
     use colored::Colorize;
     match cmd {
-        GithubCommands::Connect { token } => {
+        GithubCommands::Connect { token, json } => {
             let tok = match token {
-                Some(t) => t,
+                Some(t) => {
+                    eprintln!("warning: passing tokens/passwords as command-line arguments may leak them via shell history or process listings; pipe via stdin instead (see ai-help)");
+                    t
+                }
                 None => {
                     eprint!("Enter GitHub PAT: ");
                     tokio::task::spawn_blocking(|| {
@@ -2356,31 +2556,38 @@ async fn cmd_github(
                 anyhow::bail!("Token validation failed — check the token and network access");
             }
             monotask_github::save_token(data_dir, &tok)?;
-            println!("{}", "✓ Token saved and verified".green());
+            if json { println!("{}", serde_json::json!({"ok": true, "saved": true})); }
+            else { println!("{}", "✓ Token saved and verified".green()); }
         }
-        GithubCommands::Status => {
-            match monotask_github::load_token(data_dir)? {
-                Some(_) => println!("Token: {}", "saved".green()),
-                None => println!("Token: {}", "not set — run `monotaskcli github connect`".yellow()),
+        GithubCommands::Status { json } => {
+            let saved = monotask_github::load_token(data_dir)?.is_some();
+            if json {
+                println!("{}", serde_json::json!({"saved": saved}));
+            } else if saved {
+                println!("Token: {}", "saved".green());
+            } else {
+                println!("Token: {}", "not set — run `monotaskcli github connect`".yellow());
             }
         }
-        GithubCommands::Link { board_id, owner, repo, done_col } => {
+        GithubCommands::Link { board_id, owner, repo, done_col, json } => {
             let mut doc = storage.load_board(&board_id)?;
             let config = monotask_github::GitHubConfig {
                 owner: owner.clone(), repo: repo.clone(),
                 done_column_id: done_col, last_sync: None,
             };
             monotask_github::set_github_config(&mut doc, Some(&config))?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Linked board {board_id} → {owner}/{repo}");
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json { println!("{}", serde_json::json!({"board_id": board_id, "owner": owner, "repo": repo})); }
+            else { println!("Linked board {board_id} → {owner}/{repo}"); }
         }
-        GithubCommands::Unlink { board_id } => {
+        GithubCommands::Unlink { board_id, json } => {
             let mut doc = storage.load_board(&board_id)?;
             monotask_github::set_github_config(&mut doc, None)?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Unlinked board {board_id} from GitHub");
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json { println!("{}", serde_json::json!({"unlinked": true, "board_id": board_id})); }
+            else { println!("Unlinked board {board_id} from GitHub"); }
         }
-        GithubCommands::Sync { board_id } => {
+        GithubCommands::Sync { board_id, json } => {
             let token = monotask_github::load_token(data_dir)?
                 .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli github connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
@@ -2388,12 +2595,19 @@ async fn cmd_github(
                 .ok_or_else(|| anyhow::anyhow!("Board not linked to GitHub. Run `monotaskcli github link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_github::sync_board(&mut doc, &token, &config, &actor_pk).await?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Sync complete: ↑{} pushed  ↓{} pulled  ✕{} closed",
-                result.pushed, result.pulled, result.closed);
-            if !result.errors.is_empty() {
-                eprintln!("{} non-fatal errors:", result.errors.len());
-                for e in &result.errors { eprintln!("  - {e}"); }
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json {
+                println!("{}", serde_json::json!({
+                    "board_id": board_id, "pushed": result.pushed, "pulled": result.pulled,
+                    "closed": result.closed, "errors": result.errors,
+                }));
+            } else {
+                println!("Sync complete: ↑{} pushed  ↓{} pulled  ✕{} closed",
+                    result.pushed, result.pulled, result.closed);
+                if !result.errors.is_empty() {
+                    eprintln!("{} non-fatal errors:", result.errors.len());
+                    for e in &result.errors { eprintln!("  - {e}"); }
+                }
             }
         }
     }
@@ -2408,9 +2622,12 @@ async fn cmd_linear(
 ) -> anyhow::Result<()> {
     use colored::Colorize;
     match cmd {
-        LinearCommands::Connect { token } => {
+        LinearCommands::Connect { token, json } => {
             let tok = match token {
-                Some(t) => t,
+                Some(t) => {
+                    eprintln!("warning: passing tokens/passwords as command-line arguments may leak them via shell history or process listings; pipe via stdin instead (see ai-help)");
+                    t
+                }
                 None => {
                     eprint!("Enter Linear API key: ");
                     tokio::task::spawn_blocking(|| {
@@ -2429,44 +2646,69 @@ async fn cmd_linear(
                 anyhow::bail!("Token validation failed — check the key and network access");
             }
             monotask_linear::save_token(data_dir, &tok)?;
-            println!("{}", "✓ Linear API key saved and verified".green());
+            if json { println!("{}", serde_json::json!({"ok": true, "saved": true})); }
+            else { println!("{}", "✓ Linear API key saved and verified".green()); }
         }
-        LinearCommands::Status => {
+        LinearCommands::Status { json } => {
             match monotask_linear::load_token(data_dir)? {
                 Some(tok) => {
-                    println!("Token: {}", "saved".green());
-                    match monotask_linear::list_teams(&tok).await {
-                        Ok(teams) => {
-                            println!("Teams ({}):", teams.len());
-                            for t in &teams {
-                                println!("  {} — {} (key: {})", t.id.dimmed(), t.name.bold(), t.key);
+                    let teams_result = monotask_linear::list_teams(&tok).await;
+                    if json {
+                        match &teams_result {
+                            Ok(teams) => {
+                                let teams_json: Vec<_> = teams.iter().map(|t| serde_json::json!({"id": t.id, "name": t.name, "key": t.key})).collect();
+                                println!("{}", serde_json::json!({"saved": true, "teams": teams_json}));
                             }
+                            Err(e) => println!("{}", serde_json::json!({"saved": true, "teams_error": e.to_string()})),
                         }
-                        Err(e) => eprintln!("Could not fetch teams: {e}"),
+                    } else {
+                        println!("Token: {}", "saved".green());
+                        match teams_result {
+                            Ok(teams) => {
+                                println!("Teams ({}):", teams.len());
+                                for t in &teams {
+                                    println!("  {} — {} (key: {})", t.id.dimmed(), t.name.bold(), t.key);
+                                }
+                            }
+                            Err(e) => eprintln!("Could not fetch teams: {e}"),
+                        }
                     }
                 }
-                None => println!("Token: {}", "not set — run `monotaskcli linear connect`".yellow()),
+                None => {
+                    if json { println!("{}", serde_json::json!({"saved": false})); }
+                    else { println!("Token: {}", "not set — run `monotaskcli linear connect`".yellow()); }
+                }
             }
         }
-        LinearCommands::Teams => {
+        LinearCommands::Teams { json } => {
             let token = monotask_linear::load_token(data_dir)?
                 .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let teams = monotask_linear::list_teams(&token).await?;
-            println!("{:<40} {:<20} {}", "ID", "Key", "Name");
-            for t in &teams {
-                println!("{:<40} {:<20} {}", t.id, t.key, t.name);
+            if json {
+                let out: Vec<_> = teams.iter().map(|t| serde_json::json!({"id": t.id, "key": t.key, "name": t.name})).collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("{:<40} {:<20} {}", "ID", "Key", "Name");
+                for t in &teams {
+                    println!("{:<40} {:<20} {}", t.id, t.key, t.name);
+                }
             }
         }
-        LinearCommands::Projects { team_id } => {
+        LinearCommands::Projects { team_id, json } => {
             let token = monotask_linear::load_token(data_dir)?
                 .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let projects = monotask_linear::list_projects(&token, &team_id).await?;
-            println!("{:<40} {}", "ID", "Name");
-            for p in &projects {
-                println!("{:<40} {}", p.id, p.name);
+            if json {
+                let out: Vec<_> = projects.iter().map(|p| serde_json::json!({"id": p.id, "name": p.name})).collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+            } else {
+                println!("{:<40} {}", "ID", "Name");
+                for p in &projects {
+                    println!("{:<40} {}", p.id, p.name);
+                }
             }
         }
-        LinearCommands::Link { board_id, team, project, done_col } => {
+        LinearCommands::Link { board_id, team, project, done_col, json } => {
             let token = monotask_linear::load_token(data_dir)?
                 .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
@@ -2478,7 +2720,7 @@ async fn cmd_linear(
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| project.clone());
 
-            println!("Setting up columns from Linear workflow states…");
+            if !json { println!("Setting up columns from Linear workflow states…"); }
             let (done_col_id, done_state_id) = monotask_linear::setup_columns_from_states(
                 &mut doc,
                 &token,
@@ -2495,21 +2737,29 @@ async fn cmd_linear(
                 last_sync: None,
             };
             monotask_linear::set_linear_config(&mut doc, Some(&config))?;
-            storage.save_board(&board_id, &mut doc)?;
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
 
             let cols = monotask_core::column::list_columns(&doc)?;
             let done_title = cols.iter().find(|c| c.id == done_col_id)
                 .map(|c| c.title.as_str()).unwrap_or("?");
-            println!("{}", format!("Linked board {board_id} → {project_name}").green());
-            println!("  Done column: {} ({})", done_title, done_col_id.dimmed());
+            if json {
+                println!("{}", serde_json::json!({
+                    "board_id": board_id, "project_name": project_name,
+                    "done_column_id": done_col_id, "done_column_title": done_title,
+                }));
+            } else {
+                println!("{}", format!("Linked board {board_id} → {project_name}").green());
+                println!("  Done column: {} ({})", done_title, done_col_id.dimmed());
+            }
         }
-        LinearCommands::Unlink { board_id } => {
+        LinearCommands::Unlink { board_id, json } => {
             let mut doc = storage.load_board(&board_id)?;
             monotask_linear::set_linear_config(&mut doc, None)?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Unlinked board {board_id} from Linear");
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json { println!("{}", serde_json::json!({"unlinked": true, "board_id": board_id})); }
+            else { println!("Unlinked board {board_id} from Linear"); }
         }
-        LinearCommands::Sync { board_id } => {
+        LinearCommands::Sync { board_id, json } => {
             let token = monotask_linear::load_token(data_dir)?
                 .ok_or_else(|| anyhow::anyhow!("No token saved. Run `monotaskcli linear connect` first."))?;
             let mut doc = storage.load_board(&board_id)?;
@@ -2517,12 +2767,19 @@ async fn cmd_linear(
                 .ok_or_else(|| anyhow::anyhow!("Board not linked to Linear. Run `monotaskcli linear link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_linear::sync_board(&mut doc, &token, &config, &actor_pk).await?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Sync complete: ↑{} pushed  ↓{} pulled  ✕{} closed",
-                result.pushed, result.pulled, result.closed);
-            if !result.errors.is_empty() {
-                eprintln!("{} non-fatal errors:", result.errors.len());
-                for e in &result.errors { eprintln!("  - {e}"); }
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json {
+                println!("{}", serde_json::json!({
+                    "board_id": board_id, "pushed": result.pushed, "pulled": result.pulled,
+                    "closed": result.closed, "errors": result.errors,
+                }));
+            } else {
+                println!("Sync complete: ↑{} pushed  ↓{} pulled  ✕{} closed",
+                    result.pushed, result.pulled, result.closed);
+                if !result.errors.is_empty() {
+                    eprintln!("{} non-fatal errors:", result.errors.len());
+                    for e in &result.errors { eprintln!("  - {e}"); }
+                }
             }
         }
     }
@@ -2537,43 +2794,89 @@ async fn cmd_mail(
 ) -> anyhow::Result<()> {
     use colored::Colorize;
     match cmd {
-        MailCommands::GmailConnect { client_id } => {
+        MailCommands::GmailConnect { client_id, no_wait, json } => {
+            if no_wait {
+                let url = monotask_mail::start_oauth(data_dir, "gmail", &client_id, "common").await?;
+                if json {
+                    println!("{}", serde_json::json!({"auth_url": url, "provider": "gmail"}));
+                } else {
+                    println!("Visit this URL, approve access, then run:");
+                    println!("  monotaskcli mail oauth-complete --provider gmail --code CODE_FROM_REDIRECT_URL");
+                    println!("\n{url}");
+                }
+                return Ok(());
+            }
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let port = listener.local_addr()?.port();
             let redirect_uri = format!("http://127.0.0.1:{port}/callback");
             let (verifier, challenge) = monotask_mail::generate_pkce();
             let url = monotask_mail::build_auth_url("gmail", &client_id, "common", &challenge, &redirect_uri)?;
-            println!("Opening browser for Gmail authorization…");
-            println!("If the browser doesn't open, visit:\n  {url}");
+            if !json {
+                println!("Opening browser for Gmail authorization…");
+                println!("If the browser doesn't open, visit:\n  {url}");
+            }
             open_url(&url);
             monotask_mail::wait_and_complete_oauth(listener, data_dir, "gmail", &client_id, "common", &verifier, &redirect_uri).await?;
-            println!("{}", "✓ Gmail connected".green());
+            if json { println!("{}", serde_json::json!({"ok": true, "provider": "gmail"})); }
+            else { println!("{}", "✓ Gmail connected".green()); }
         }
-        MailCommands::OutlookConnect { client_id, tenant_id } => {
+        MailCommands::OutlookConnect { client_id, tenant_id, no_wait, json } => {
+            if no_wait {
+                let url = monotask_mail::start_oauth(data_dir, "outlook", &client_id, &tenant_id).await?;
+                if json {
+                    println!("{}", serde_json::json!({"auth_url": url, "provider": "outlook"}));
+                } else {
+                    println!("Visit this URL, approve access, then run:");
+                    println!("  monotaskcli mail oauth-complete --provider outlook --code CODE_FROM_REDIRECT_URL");
+                    println!("\n{url}");
+                }
+                return Ok(());
+            }
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
             let port = listener.local_addr()?.port();
             let redirect_uri = format!("http://127.0.0.1:{port}/callback");
             let (verifier, challenge) = monotask_mail::generate_pkce();
             let url = monotask_mail::build_auth_url("outlook", &client_id, &tenant_id, &challenge, &redirect_uri)?;
-            println!("Opening browser for Outlook authorization…");
-            println!("If the browser doesn't open, visit:\n  {url}");
+            if !json {
+                println!("Opening browser for Outlook authorization…");
+                println!("If the browser doesn't open, visit:\n  {url}");
+            }
             open_url(&url);
             monotask_mail::wait_and_complete_oauth(listener, data_dir, "outlook", &client_id, &tenant_id, &verifier, &redirect_uri).await?;
-            println!("{}", "✓ Outlook connected".green());
+            if json { println!("{}", serde_json::json!({"ok": true, "provider": "outlook"})); }
+            else { println!("{}", "✓ Outlook connected".green()); }
         }
-        MailCommands::Status => {
-            let gmail = if monotask_mail::token_saved(data_dir, "gmail") { "connected".green() } else { "not connected".yellow() };
-            let outlook = if monotask_mail::token_saved(data_dir, "outlook") { "connected".green() } else { "not connected".yellow() };
-            println!("Gmail:   {gmail}");
-            println!("Outlook: {outlook}");
+        MailCommands::OauthComplete { provider, code, json } => {
+            monotask_mail::complete_oauth(data_dir, &provider, &code).await?;
+            if json {
+                println!("{}", serde_json::json!({"ok": true, "provider": provider}));
+            } else {
+                println!("{}", format!("✓ {provider} connected").green());
+            }
         }
-        MailCommands::Disconnect { provider } => {
+        MailCommands::Status { json } => {
+            let gmail_connected = monotask_mail::token_saved(data_dir, "gmail");
+            let outlook_connected = monotask_mail::token_saved(data_dir, "outlook");
+            if json {
+                println!("{}", serde_json::json!({"gmail": gmail_connected, "outlook": outlook_connected}));
+            } else {
+                let gmail = if gmail_connected { "connected".green() } else { "not connected".yellow() };
+                let outlook = if outlook_connected { "connected".green() } else { "not connected".yellow() };
+                println!("Gmail:   {gmail}");
+                println!("Outlook: {outlook}");
+            }
+        }
+        MailCommands::Disconnect { provider, json } => {
             monotask_mail::delete_token(data_dir, &provider)?;
-            println!("Disconnected {provider}");
+            if json { println!("{}", serde_json::json!({"disconnected": provider})); }
+            else { println!("Disconnected {provider}"); }
         }
-        MailCommands::ImapConnect { host, port, username, password, folder } => {
+        MailCommands::ImapConnect { host, port, username, password, folder, json } => {
             let pwd = match password {
-                Some(p) => p,
+                Some(p) => {
+                    eprintln!("warning: passing tokens/passwords as command-line arguments may leak them via shell history or process listings; pipe via stdin instead (see ai-help)");
+                    p
+                }
                 None => {
                     eprint!("Password (or app password): ");
                     tokio::task::spawn_blocking(|| {
@@ -2586,7 +2889,7 @@ async fn cmd_mail(
             };
             let creds = monotask_mail::ImapCredentials { host, port, username: username.clone(), password: pwd, folder };
             // Test connection before saving
-            println!("Testing IMAP connection to {}:{}…", creds.host, creds.port);
+            if !json { println!("Testing IMAP connection to {}:{}…", creds.host, creds.port); }
             let test_creds = creds.clone();
             let test_result = tokio::task::spawn_blocking(move || {
                 monotask_mail::imap_client::fetch_since_sync_test(&test_creds)
@@ -2594,31 +2897,42 @@ async fn cmd_mail(
             match test_result {
                 Ok(()) => {
                     monotask_mail::save_imap_credentials(data_dir, &creds)?;
-                    println!("{}", "✓ IMAP connected and credentials saved".green());
-                    println!("  Username: {username}");
-                    println!("  Tip: use `monotaskcli mail link <BOARD_ID> --provider imap` to link a board.");
+                    if json {
+                        println!("{}", serde_json::json!({"ok": true, "username": username, "host": creds.host, "port": creds.port}));
+                    } else {
+                        println!("{}", "✓ IMAP connected and credentials saved".green());
+                        println!("  Username: {username}");
+                        println!("  Tip: use `monotaskcli mail link <BOARD_ID> --provider imap` to link a board.");
+                    }
                 }
                 Err(e) => {
                     anyhow::bail!("IMAP connection test failed: {e}\nCheck host, port, username, and password.");
                 }
             }
         }
-        MailCommands::ImapStatus => {
+        MailCommands::ImapStatus { json } => {
             if monotask_mail::imap_credentials_saved(data_dir) {
                 if let Ok(Some(c)) = monotask_mail::load_imap_credentials(data_dir) {
-                    println!("IMAP: {} ({}:{})", "connected".green(), c.host, c.port);
-                    println!("  Username: {}", c.username);
-                    println!("  Folder:   {}", c.folder);
+                    if json {
+                        println!("{}", serde_json::json!({"connected": true, "host": c.host, "port": c.port, "username": c.username, "folder": c.folder}));
+                    } else {
+                        println!("IMAP: {} ({}:{})", "connected".green(), c.host, c.port);
+                        println!("  Username: {}", c.username);
+                        println!("  Folder:   {}", c.folder);
+                    }
                 }
+            } else if json {
+                println!("{}", serde_json::json!({"connected": false}));
             } else {
                 println!("IMAP: {}", "not configured — run `monotaskcli mail imap-connect`".yellow());
             }
         }
-        MailCommands::ImapDisconnect => {
+        MailCommands::ImapDisconnect { json } => {
             monotask_mail::delete_imap_credentials(data_dir)?;
-            println!("IMAP credentials removed.");
+            if json { println!("{}", serde_json::json!({"disconnected": true})); }
+            else { println!("IMAP credentials removed."); }
         }
-        MailCommands::Link { board_id, provider, gmail_client_id, outlook_client_id, tenant_id, inbox_col, keep_last } => {
+        MailCommands::Link { board_id, provider, gmail_client_id, outlook_client_id, tenant_id, inbox_col, keep_last, json } => {
             let mut doc = storage.load_board(&board_id)?;
             // Arg > env var > existing board config (preserve on re-link)
             let existing = monotask_mail::get_mail_config(&doc);
@@ -2650,24 +2964,33 @@ async fn cmd_mail(
                 eprintln!("Re-run with --gmail-client-id or --outlook-client-id, or set MAIL_GMAIL_CLIENT_ID / MAIL_OUTLOOK_CLIENT_ID env vars.");
             }
             monotask_mail::set_mail_config(&mut doc, Some(&config))?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Linked board {board_id} to email sync (provider: {provider})");
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json { println!("{}", serde_json::json!({"board_id": board_id, "provider": provider, "needs_client_id": needs_client_id})); }
+            else { println!("Linked board {board_id} to email sync (provider: {provider})"); }
         }
-        MailCommands::Unlink { board_id } => {
+        MailCommands::Unlink { board_id, json } => {
             let mut doc = storage.load_board(&board_id)?;
             monotask_mail::set_mail_config(&mut doc, None)?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Unlinked board {board_id} from email sync");
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json { println!("{}", serde_json::json!({"unlinked": true, "board_id": board_id})); }
+            else { println!("Unlinked board {board_id} from email sync"); }
         }
-        MailCommands::Sync { board_id } => {
+        MailCommands::Sync { board_id, json } => {
             let mut doc = storage.load_board(&board_id)?;
             let config = monotask_mail::get_mail_config(&doc)
                 .ok_or_else(|| anyhow::anyhow!("Board not linked to email. Run `monotaskcli mail link` first."))?;
             let actor_pk = identity.public_key_bytes().to_vec();
             let result = monotask_mail::sync_board(&mut doc, data_dir, &config, &actor_pk).await?;
-            storage.save_board(&board_id, &mut doc)?;
-            println!("Sync complete: {} new contacts, {} updated, {} emails added",
-                result.contacts_created, result.contacts_updated, result.emails_added);
+            save_with_undo(storage, identity, &board_id, &mut doc, "cli_change")?;
+            if json {
+                println!("{}", serde_json::json!({
+                    "board_id": board_id, "contacts_created": result.contacts_created,
+                    "contacts_updated": result.contacts_updated, "emails_added": result.emails_added,
+                }));
+            } else {
+                println!("Sync complete: {} new contacts, {} updated, {} emails added",
+                    result.contacts_created, result.contacts_updated, result.emails_added);
+            }
         }
     }
     Ok(())
@@ -2682,8 +3005,7 @@ fn open_url(url: &str) {
     { let _ = std::process::Command::new("cmd").args(["/c", "start", "", url]).spawn(); }
 }
 
-fn print_ai_help() {
-    print!("{}", r##"
+const AI_HELP_INTRO: &str = r##"
 ================================================================================
 MONOTASK CLI – AI AGENT REFERENCE
 ================================================================================
@@ -2693,6 +3015,13 @@ Purpose: P2P task manager with local-first CRDT storage. Designed for
          task management, collaborative workspaces, and automation via CLI.
 
 Run `monotaskcli ai-help` to print this document at any time.
+  monotaskcli ai-help --json               structured JSON manifest of every
+                                            (sub)command and arg, introspected
+                                            live from clap (always current)
+  monotaskcli ai-help --section commands   just this COMMANDS reference
+  monotaskcli ai-help --section schemas    just TIMESTAMPS/ID FORMATS/STORAGE
+  monotaskcli ai-help --section workflows  just COMMON AGENT WORKFLOWS
+  monotaskcli ai-help --section gotchas    just ERROR HANDLING/LIMITATIONS
 
 --------------------------------------------------------------------------------
 QUICK-START FOR AGENTS
@@ -2735,7 +3064,9 @@ Your public key is used as:
   - Space ownership and membership
   - Card authorship (created_by field)
   - Invite token signing/verification
+"##;
 
+const AI_HELP_COMMANDS: &str = r##"
 --------------------------------------------------------------------------------
 COMMANDS
 --------------------------------------------------------------------------------
@@ -3377,6 +3708,7 @@ checklists, each with its own items.
 ## space
 Spaces are shared containers that group boards and members. They enable
 multi-user collaboration via signed invite tokens.
+All subcommands below accept --json for machine-readable output.
 
 Space ownership: The creator is the owner (cannot be changed).
 Members: Any user who joins via a valid invite token.
@@ -3445,6 +3777,7 @@ Boards: Boards are associated with a space; they can be on multiple spaces.
 ────────────────────────────────────────────────────────────────────────────────
 ## profile
 Manages the local user's identity and display information.
+All subcommands below accept --json for machine-readable output.
 
 ### profile show
   Prints:
@@ -3468,25 +3801,30 @@ Manages the local user's identity and display information.
 ────────────────────────────────────────────────────────────────────────────────
 ## github
 Bidirectional sync with GitHub Issues. Requires a GitHub Personal Access Token.
+All subcommands below accept --json for machine-readable output.
 
-### github connect [TOKEN]
+### github connect [TOKEN] [--json]
   Saves a GitHub PAT (ghp_…) to local storage. Reads from stdin if omitted.
   The token needs repo scope (read/write issues and comments).
+  Recommended for agent-driven use: pipe the token via stdin instead of passing
+  it as a positional argument, to keep it out of shell history and process
+  listings (a positional arg is visible to `ps` while the process runs):
+    echo "$GITHUB_TOKEN" | monotaskcli github connect --json
 
-### github status
+### github status [--json]
   Shows whether a GitHub token is saved locally. Does not print the token
   or make any network call. To verify connectivity, re-run `github connect`.
 
-### github link <BOARD_ID> <OWNER> <REPO> --done-col <COL_ID>
+### github link <BOARD_ID> <OWNER> <REPO> --done-col <COL_ID> [--json]
   Links a board to a GitHub repository.
   OWNER: GitHub user or org name.
   REPO:  Repository name.
   --done-col: Column ID whose cards map to "closed" GitHub issues.
 
-### github unlink <BOARD_ID>
+### github unlink <BOARD_ID> [--json]
   Removes the GitHub repository link from a board.
 
-### github sync <BOARD_ID>
+### github sync <BOARD_ID> [--json]
   Runs a full bidirectional sync between the board and linked GitHub repo:
   - Pulls new/updated GitHub issues → creates/updates cards
   - Pulls new GitHub comments → adds comments to cards (with avatar_url)
@@ -3496,28 +3834,33 @@ Bidirectional sync with GitHub Issues. Requires a GitHub Personal Access Token.
 ────────────────────────────────────────────────────────────────────────────────
 ## linear
 Bidirectional sync with Linear issues. Requires a Linear API key.
+All subcommands below accept --json for machine-readable output.
 
-### linear connect [TOKEN]
+### linear connect [TOKEN] [--json]
   Saves a Linear API key to local storage. Reads from stdin if omitted.
+  Recommended for agent-driven use: pipe the key via stdin instead of passing
+  it as a positional argument, to keep it out of shell history and process
+  listings:
+    echo "$LINEAR_API_KEY" | monotaskcli linear connect --json
 
-### linear status
+### linear status [--json]
   Shows token status and lists accessible Linear teams.
 
-### linear teams
+### linear teams [--json]
   Lists all teams accessible with the saved token (id and name).
 
-### linear projects <TEAM_ID>
+### linear projects <TEAM_ID> [--json]
   Lists all projects for the given Linear team.
 
-### linear link <BOARD_ID> --team <TEAM_ID> --project <PROJECT_ID> [--done-col <COL_ID>]
+### linear link <BOARD_ID> --team <TEAM_ID> --project <PROJECT_ID> [--done-col <COL_ID>] [--json]
   Links a board to a Linear project. Creates Monotask columns matching
   the Linear workflow states automatically.
   --done-col: Optional column to map to "completed" Linear state.
 
-### linear unlink <BOARD_ID>
+### linear unlink <BOARD_ID> [--json]
   Removes the Linear project link from a board.
 
-### linear sync <BOARD_ID>
+### linear sync <BOARD_ID> [--json]
   Runs a full bidirectional sync:
   - Pulls new/updated Linear issues → creates/updates cards
   - Pulls new Linear comments → adds comments to cards
@@ -3526,36 +3869,90 @@ Bidirectional sync with Linear issues. Requires a Linear API key.
 
 ────────────────────────────────────────────────────────────────────────────────
 ## mail
-Gmail and Outlook email integration. Syncs email contacts into boards as cards.
-One card per unique sender. Recent emails stored as comments. BYO OAuth2 credentials.
+Gmail, Outlook, and IMAP email integration. Syncs email contacts into boards as
+cards. One card per unique sender. Recent emails stored as comments. BYO OAuth2
+credentials for Gmail/Outlook, or a plain username+password for IMAP.
 
-### mail gmail-connect --client-id <CLIENT_ID>
-  Connects Gmail via OAuth2 PKCE. Opens your browser for authorization.
+RECOMMENDED FOR AI AGENTS: use --no-wait plus `mail oauth-complete`, not plain
+`mail gmail-connect` / `mail outlook-connect`. Without --no-wait those commands
+open a browser and BLOCK FOR UP TO 5 MINUTES waiting on the OAuth redirect to
+hit a localhost listener — this hangs a headless/autonomous agent process.
+IMAP (`mail imap-connect`) needs no OAuth app registration and no browser at
+all, so prefer it outright when the mailbox supports IMAP + an app password.
+
+### mail gmail-connect --client-id <CLIENT_ID> [--no-wait] [--json]
+  Connects Gmail via OAuth2 PKCE. Without --no-wait, opens a browser and BLOCKS
+  up to 5 minutes for the redirect — fine for a human, unsuitable for an agent.
   Get a client ID: Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client ID (Desktop app).
   Enable the Gmail API in your project first.
+  --no-wait: print the auth URL and return immediately instead of waiting on the
+  browser redirect (headless/agent use — RECOMMENDED). Finish with `mail oauth-complete`.
+  JSON output: with --no-wait, {"auth_url":"<url>","provider":"gmail"}; without
+  it (after the redirect completes), {"ok":true,"provider":"gmail"}.
 
-### mail outlook-connect --client-id <CLIENT_ID> [--tenant-id <TENANT>]
-  Connects Outlook via OAuth2 PKCE. Opens your browser for authorization.
+### mail outlook-connect --client-id <CLIENT_ID> [--tenant-id <TENANT>] [--no-wait] [--json]
+  Connects Outlook via OAuth2 PKCE. Without --no-wait, opens a browser and BLOCKS
+  up to 5 minutes for the redirect — fine for a human, unsuitable for an agent.
   Get a client ID: Azure Portal → App Registrations → New registration (Mobile/Desktop app).
   Tenant defaults to "common" (personal + work accounts).
+  --no-wait: print the auth URL and return immediately instead of waiting on the
+  browser redirect (headless/agent use — RECOMMENDED). Finish with `mail oauth-complete`.
+  JSON output: with --no-wait, {"auth_url":"<url>","provider":"outlook"}; without
+  it, {"ok":true,"provider":"outlook"}.
 
-### mail status
+### mail oauth-complete --provider <gmail|outlook> --code <CODE> [--json]
+  Completes a flow started with --no-wait, given the authorization code from
+  the `code` query param of the redirect URL.
+  JSON output: {"ok":true,"provider":"<gmail|outlook>"}
+
+  Headless OAuth recipe for agents (no waiting, no local browser needed):
+    URL=$(monotaskcli mail gmail-connect --client-id $ID --no-wait --json | jq -r .auth_url)
+    # open $URL in any browser (human authorizes once), copy the `code` param
+    # from the resulting redirect URL, then:
+    monotaskcli mail oauth-complete --provider gmail --code $CODE --json
+
+### mail status [--json]
   Shows connection status for Gmail and Outlook.
+  JSON output: {"gmail":<bool>,"outlook":<bool>}
 
-### mail disconnect <PROVIDER>
+### mail disconnect <PROVIDER> [--json]
   Removes saved credentials for "gmail" or "outlook".
 
-### mail link <BOARD_ID> [--provider both|gmail|outlook] [--inbox-col <COL_ID>] [--keep-last <N>]
+### mail link <BOARD_ID> [--provider both|gmail|outlook|imap] [--gmail-client-id <ID>] [--outlook-client-id <ID>] [--tenant-id <TENANT>] [--inbox-col <COL_ID>] [--keep-last <N>] [--json]
   Links a board to receive email contacts. New contacts go to the inbox column.
   --provider: which provider(s) to sync (default: both)
+  --gmail-client-id / --outlook-client-id / --tenant-id: pass OAuth client IDs
+  inline instead of env vars. Resolution order: this flag > env var
+  (MAIL_GMAIL_CLIENT_ID / MAIL_OUTLOOK_CLIENT_ID) > existing link config
+  (preserved across re-links). Prefer the env vars over the inline flags when
+  scripting, to keep client IDs out of shell history.
   --inbox-col: column ID for new contact cards (default: first column)
   --keep-last: number of recent emails to keep as comments per contact (default: 2)
-  Set MAIL_GMAIL_CLIENT_ID and MAIL_OUTLOOK_CLIENT_ID env vars for sync.
 
-### mail unlink <BOARD_ID>
+### mail imap-connect --host <HOST> --username <USER> [--port <PORT>] [--password <PASS>] [--folder <FOLDER>] [--json]
+  Connects via plain IMAP (works with any provider that supports app passwords —
+  no OAuth app registration and no browser needed). Tests the connection before
+  saving credentials. Reads the password from stdin if --password is omitted.
+  --host: IMAP server hostname, e.g. imap.gmail.com
+  --port: IMAP port (default 993, implicit TLS)
+  --username: email address / login
+  --password: password or app-specific password. Prefer piping it via stdin
+  (see `github connect` / `linear connect` below) to avoid leaking it into
+  shell history or process listings.
+  --folder: mailbox folder to sync (default INBOX)
+  JSON output: {"ok":true,"username":"<str>","host":"<str>","port":<int>}
+
+### mail imap-status [--json]
+  Shows saved IMAP host/username/folder and reports whether credentials exist.
+  JSON output: {"connected":<bool>,"host":"<str>","port":<int>,"username":"<str>","folder":"<str>"}
+
+### mail imap-disconnect [--json]
+  Removes saved IMAP credentials.
+
+### mail unlink <BOARD_ID> [--json]
   Removes the email sync link from a board.
 
-### mail sync <BOARD_ID>
+### mail sync <BOARD_ID> [--json]
   Fetches emails since last sync (or last 30 days on first run), groups by sender,
   and upserts one card per contact with recent emails as comments.
   Custom fields updated: Email, Last Seen, Email Count, Provider, Labels.
@@ -3582,11 +3979,12 @@ same pipeline as boards. Each space has one chat doc keyed `{space_id}-chat`.
 ## app
 Commands for interacting with the Monotask desktop application.
 
-### app open <URL>
+### app open <URL> [--json]
   Opens a monotask:// deep link in the running desktop app.
   Supported URL patterns:
     monotask://board/<BOARD_ID>             — navigate to a board
     monotask://board/<BOARD_ID>/card/<ID>  — open a specific card
+  JSON output: {"opened":"<url>"}
 
   Example:
     monotaskcli app open monotask://board/a1b2c3d4-...
@@ -3596,6 +3994,7 @@ Commands for interacting with the Monotask desktop application.
 ## sync
 Starts the P2P sync daemon using iroh QUIC transport (direct address + bootstrap peers).
 The daemon keeps boards in sync with other Monotask peers on the local network.
+All modes below accept --json for machine-readable output.
 
 ### sync [OPTIONS]
   --detach           Run in background (writes PID to data dir)
@@ -3606,13 +4005,16 @@ The daemon keeps boards in sync with other Monotask peers on the local network.
   --peer <MULTIADDR> Dial a specific peer at startup, bypassing mDNS discovery.
                      Format: /ip4/1.2.3.4/tcp/7272
                      Repeat the flag to add multiple peers.
+  --json             Output JSON (e.g. {"stopped":true,"pid":<int>} for --stop)
 
   Example (background daemon with fixed port):
     monotaskcli sync --detach --port 7272
 
   Example (connect directly to a known peer):
     monotaskcli sync --peer /ip4/192.168.1.10/tcp/7272
+"##;
 
+const AI_HELP_SCHEMAS: &str = r##"
 --------------------------------------------------------------------------------
 TIMESTAMPS (HLC FORMAT)
 --------------------------------------------------------------------------------
@@ -3666,7 +4068,9 @@ Board data is stored as Automerge CRDT binary documents. The root map contains:
 
 SQLite index:
   card_custom_field_index  board_id | card_id | field_id | value_text | value_num | value_date
+"##;
 
+const AI_HELP_WORKFLOWS: &str = r##"
 --------------------------------------------------------------------------------
 COMMON AGENT WORKFLOWS
 --------------------------------------------------------------------------------
@@ -3767,18 +4171,43 @@ COMMON AGENT WORKFLOWS
   monotaskcli card comment add $BOARD $CARD "Starting work on this"
   monotaskcli card comment add $BOARD $CARD "Blocked on API access"
   monotaskcli card comment list $BOARD $CARD --json
+"##;
 
+const AI_HELP_GOTCHAS: &str = r##"
 --------------------------------------------------------------------------------
 ERROR HANDLING
 --------------------------------------------------------------------------------
 All commands exit with code 0 on success, non-zero on error.
-Errors are printed to stderr as plain text (not JSON).
+
+If the command was invoked with --json anywhere in its arguments, a failure is
+printed to STDOUT (not stderr) as a single JSON object instead of plain text:
+  {"ok": false, "error": "<message>", "kind": "<not_found|invalid_input|io_error|error>"}
+"kind" is a best-effort classification for branching without parsing English
+prose; treat it as informational, not an exhaustive typed error enum.
+Without --json, errors are printed to stderr as plain text ("Error: <message>").
+
+The process exit code also encodes "kind" (same for both --json and plain
+text output — only the printed message format differs):
+  1 = error        (generic/uncategorized failure — default fallback)
+  2 = not_found
+  3 = invalid_input
+  4 = io_error
+
 Common error causes:
   - Board/card/column/space ID not found in local database
   - Invalid UUID format for IDs
   - Board file corrupted or missing
   - Invite token invalid signature or revoked
   - SSH key file not found or wrong format (must be Ed25519)
+
+Secrets as CLI arguments:
+  `github connect [TOKEN]`, `linear connect [TOKEN]`, and
+  `mail imap-connect --password <PWD>` accept the secret as a plain
+  argument, but this can leak it via shell history or process listings
+  (e.g. `ps`). If the argument is omitted, the CLI prompts and reads the
+  secret from stdin instead (not visible in `ps`/history). Prefer piping
+  via stdin for automation. If the secret is passed directly, a one-line
+  warning is printed to stderr before the command proceeds.
 
 --------------------------------------------------------------------------------
 LIMITATIONS & NOTES FOR AGENTS
@@ -3807,7 +4236,69 @@ LIMITATIONS & NOTES FOR AGENTS
   Cards with existing values (even if different from the default) are left unchanged.
 
 ================================================================================
-"##);
+"##;
+
+/// Build a JSON manifest of the full command tree, introspected live from the
+/// clap `Command` graph (not hand-maintained prose — stays correct as the CLI
+/// evolves). Includes each (sub)command's name/about and each arg's
+/// name/required/positional/help/possible-values.
+fn build_ai_help_manifest() -> serde_json::Value {
+    fn walk(cmd: &clap::Command) -> serde_json::Value {
+        let args: Vec<serde_json::Value> = cmd
+            .get_arguments()
+            .filter(|a| a.get_id().as_str() != "help")
+            .map(|a| {
+                let possible_values: Vec<String> = a
+                    .get_possible_values()
+                    .iter()
+                    .map(|p| p.get_name().to_string())
+                    .collect();
+                serde_json::json!({
+                    "name": a.get_id().as_str(),
+                    "required": a.is_required_set(),
+                    "positional": a.is_positional(),
+                    "help": a.get_help().map(|h| h.to_string()),
+                    "possible_values": possible_values,
+                })
+            })
+            .collect();
+        let subcommands: Vec<serde_json::Value> = cmd.get_subcommands().map(walk).collect();
+        serde_json::json!({
+            "name": cmd.get_name(),
+            "about": cmd.get_about().map(|s| s.to_string()),
+            "long_about": cmd.get_long_about().map(|s| s.to_string()),
+            "args": args,
+            "subcommands": subcommands,
+        })
+    }
+    let cmd = <Cli as clap::CommandFactory>::command();
+    walk(&cmd)
+}
+
+fn print_ai_help(json: bool, section: Option<String>) -> anyhow::Result<()> {
+    if json {
+        let manifest = build_ai_help_manifest();
+        println!("{}", serde_json::to_string_pretty(&manifest)?);
+        return Ok(());
+    }
+    if let Some(section) = section {
+        match section.to_lowercase().as_str() {
+            "commands" => print!("{}", AI_HELP_COMMANDS),
+            "schemas" => print!("{}", AI_HELP_SCHEMAS),
+            "workflows" => print!("{}", AI_HELP_WORKFLOWS),
+            "gotchas" => print!("{}", AI_HELP_GOTCHAS),
+            other => anyhow::bail!(
+                "unknown --section '{}'. Valid sections: commands, schemas, workflows, gotchas",
+                other
+            ),
+        }
+        return Ok(());
+    }
+    print!(
+        "{}{}{}{}{}",
+        AI_HELP_INTRO, AI_HELP_COMMANDS, AI_HELP_SCHEMAS, AI_HELP_WORKFLOWS, AI_HELP_GOTCHAS
+    );
+    Ok(())
 }
 
 /// Parse a list of "KEY=VALUE" strings from --field flags.

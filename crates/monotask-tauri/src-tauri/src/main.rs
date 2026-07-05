@@ -1973,28 +1973,6 @@ fn get_space_cmd(space_id: String, state: tauri::State<AppState>) -> Result<Spac
     Ok(space_to_view(space))
 }
 
-/// Embed the current swarm listen addresses into the space doc so invitees can auto-connect.
-#[allow(dead_code)]
-fn embed_listen_addrs_in_doc(state: &AppState, space_id: &str) -> Result<Vec<u8>, String> {
-    let listen_addrs = {
-        let net = state.net.lock().map_err(|e| e.to_string())?;
-        net.as_ref().map(|h| h.get_listen_addrs_sync()).unwrap_or_default()
-    };
-    let storage = state.storage.lock().map_err(|e| e.to_string())?;
-    let doc_bytes = monotask_storage::space::load_space_doc(storage.conn(), space_id)
-        .map_err(|e| e.to_string())?;
-    let mut doc = automerge::AutoCommit::load(&doc_bytes).map_err(|e| e.to_string())?;
-    // Only embed non-loopback addresses that look usable
-    let addrs: Vec<String> = listen_addrs.into_iter()
-        .filter(|a| !a.contains("/127.0.0.1/") && !a.contains("/::1/"))
-        .collect();
-    monotask_core::space::set_owner_peer_addrs(&mut doc, &addrs).map_err(|e| e.to_string())?;
-    let updated = doc.save();
-    monotask_storage::space::update_space_doc(storage.conn(), space_id, &updated)
-        .map_err(|e| e.to_string())?;
-    Ok(updated)
-}
-
 /// Shared invite generation: builds a minimal doc (name + peer addrs only), signs the token.
 fn generate_invite_inner(space_id: &str, state: &AppState) -> Result<String, String> {
     // Build a minimal doc with just the space name + peer addrs — NOT the full space doc.
@@ -3728,7 +3706,11 @@ async fn sync_linear_card_cmd(
 async fn update_cli_binary(assets: &serde_json::Value, tag: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
-        let asset_name = format!("monotask-{}-aarch64-apple-darwin.tar.gz", tag);
+        #[cfg(target_arch = "aarch64")]
+        let arch = "aarch64";
+        #[cfg(target_arch = "x86_64")]
+        let arch = "x86_64";
+        let asset_name = format!("monotask-{}-{}-apple-darwin.tar.gz", tag, arch);
         let url = match assets.as_array()
             .and_then(|arr| arr.iter().find(|a| a["name"].as_str() == Some(&asset_name)))
             .and_then(|a| a["browser_download_url"].as_str())
@@ -3816,7 +3798,53 @@ async fn update_cli_binary(assets: &serde_json::Value, tag: &str) -> bool {
         return ok;
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        let asset_name = format!("monotask-{}-x86_64-linux.tar.gz", tag);
+        let url = match assets.as_array()
+            .and_then(|arr| arr.iter().find(|a| a["name"].as_str() == Some(&asset_name)))
+            .and_then(|a| a["browser_download_url"].as_str())
+        {
+            Some(u) => u.to_string(),
+            None => return false,
+        };
+
+        let install_dir = tokio::process::Command::new("sh")
+            .args(["-c", "dirname $(which monotask 2>/dev/null) 2>/dev/null"])
+            .output().await.ok()
+            .and_then(|o| if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            } else { None })
+            .unwrap_or_else(|| "/usr/local/bin".to_string());
+
+        let tmp_tar = format!("/tmp/monotask-cli-{}.tar.gz", tag);
+        let dl = tokio::process::Command::new("curl")
+            .args(["-sfL", "--max-time", "120", "-o", &tmp_tar,
+                   "-H", "User-Agent: monotask-updater", &url])
+            .status().await;
+        if dl.map(|s| !s.success()).unwrap_or(true) {
+            let _ = tokio::fs::remove_file(&tmp_tar).await;
+            return false;
+        }
+
+        let _ = tokio::process::Command::new("tar")
+            .args(["-xzf", &tmp_tar, "-C", "/tmp", "monotask"])
+            .status().await;
+
+        let dest = format!("{}/monotask", install_dir);
+        let ok = tokio::process::Command::new("cp")
+            .args(["-f", "/tmp/monotask", &dest])
+            .status().await.map(|s| s.success()).unwrap_or(false);
+        let _ = tokio::process::Command::new("chmod")
+            .args(["+x", &dest]).status().await;
+
+        let _ = tokio::fs::remove_file(&tmp_tar).await;
+        let _ = tokio::fs::remove_file("/tmp/monotask").await;
+        return ok;
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { let _ = (assets, tag); false }
 }
 
@@ -4074,7 +4102,16 @@ async fn install_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
         app.exit(0);
     }
 
-    Ok(())
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    return Ok(());
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = &app;
+        return Err(format!(
+            "Automatic desktop app updates aren't available on Linux yet — release {tag} does not publish a Linux desktop build. Please update manually from https://github.com/nokhodian/monotask/releases."
+        ));
+    }
 }
 
 // ── Mail (Gmail / Outlook) Integration ───────────────────────────────────────

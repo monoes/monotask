@@ -689,7 +689,16 @@ pub async fn sync_board(
         .and_then(|s| if s.is_empty() { None } else { Some(s) });
     let issues = client.list_issues(&config.project_id, since).await
         .context("fetching Linear issues")?;
-    let issue_map: HashMap<String, &LinearIssue> = issues.iter().map(|i| (i.id.clone(), i)).collect();
+    // Push/cancel below need the current remote state of every locally-tracked issue,
+    // not just the ones that changed remotely since last_sync — otherwise local edits
+    // and deletions silently stop propagating after the first sync.
+    let all_issues = if since.is_some() {
+        client.list_issues(&config.project_id, None).await
+            .context("fetching all Linear issues")?
+    } else {
+        issues.clone()
+    };
+    let issue_map: HashMap<String, &LinearIssue> = all_issues.iter().map(|i| (i.id.clone(), i)).collect();
 
     // Build column maps
     let columns = monotask_core::column::list_columns(doc).context("listing columns")?;
@@ -768,12 +777,18 @@ pub async fn sync_board(
                 let desc_raw = issue.description.as_deref().unwrap_or("");
                 let assignee_name = issue.assignee.as_ref().map(|a| a.name.as_str());
                 let desc = build_description_with_assignee(desc_raw, assignee_name);
-                let _ = monotask_core::card::set_description(doc, &card_id, &desc);
+                if let Err(e) = monotask_core::card::set_description(doc, &card_id, &desc) {
+                    result.errors.push(format!("set_description {card_id}: {e}"));
+                }
 
                 // Priority → impact/effort
                 if let Some((impact, effort)) = linear_priority_to_impact_effort(issue.priority) {
-                    let _ = monotask_core::card::set_impact(doc, &card_id, impact);
-                    let _ = monotask_core::card::set_effort(doc, &card_id, effort);
+                    if let Err(e) = monotask_core::card::set_impact(doc, &card_id, impact) {
+                        result.errors.push(format!("set_impact {card_id}: {e}"));
+                    }
+                    if let Err(e) = monotask_core::card::set_effort(doc, &card_id, effort) {
+                        result.errors.push(format!("set_effort {card_id}: {e}"));
+                    }
                 }
 
                 // Move card if state/column changed
@@ -792,7 +807,9 @@ pub async fn sync_board(
                 sync_labels(doc, &card_id, &issue.labels.nodes, &col_title_to_id);
 
                 let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-                let _ = set_linear_synced_at(doc, &card_id, &now);
+                if let Err(e) = set_linear_synced_at(doc, &card_id, &now) {
+                    result.errors.push(format!("set_linear_synced_at {card_id}: {e}"));
+                }
                 result.pulled += 1;
             }
         } else {
@@ -818,25 +835,40 @@ pub async fn sync_board(
             let assignee_name = issue.assignee.as_ref().map(|a| a.name.as_str());
             let desc = build_description_with_assignee(desc_raw, assignee_name);
             if !desc.is_empty() {
-                let _ = monotask_core::card::set_description(doc, &linked_card_id, &desc);
+                if let Err(e) = monotask_core::card::set_description(doc, &linked_card_id, &desc) {
+                    result.errors.push(format!("set_description {linked_card_id}: {e}"));
+                }
             }
-            let _ = set_linear_issue_id(doc, &linked_card_id, &issue.id);
-            let _ = set_linear_issue_identifier(doc, &linked_card_id, &issue.identifier);
+            if let Err(e) = set_linear_issue_id(doc, &linked_card_id, &issue.id) {
+                result.errors.push(format!("set_linear_issue_id {linked_card_id}: {e}"));
+            }
+            if let Err(e) = set_linear_issue_identifier(doc, &linked_card_id, &issue.identifier) {
+                result.errors.push(format!("set_linear_issue_identifier {linked_card_id}: {e}"));
+            }
 
             if let Some((impact, effort)) = linear_priority_to_impact_effort(issue.priority) {
-                let _ = monotask_core::card::set_impact(doc, &linked_card_id, impact);
-                let _ = monotask_core::card::set_effort(doc, &linked_card_id, effort);
+                if let Err(e) = monotask_core::card::set_impact(doc, &linked_card_id, impact) {
+                    result.errors.push(format!("set_impact {linked_card_id}: {e}"));
+                }
+                if let Err(e) = monotask_core::card::set_effort(doc, &linked_card_id, effort) {
+                    result.errors.push(format!("set_effort {linked_card_id}: {e}"));
+                }
             }
 
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-            let _ = set_linear_synced_at(doc, &linked_card_id, &now);
+            if let Err(e) = set_linear_synced_at(doc, &linked_card_id, &now) {
+                result.errors.push(format!("set_linear_synced_at {linked_card_id}: {e}"));
+            }
             sync_labels(doc, &linked_card_id, &issue.labels.nodes, &col_title_to_id);
 
             if !is_new {
                 if let Some(from) = card_to_col.get(&linked_card_id).cloned() {
                     if from != target_col_id {
-                        let _ = monotask_core::column::move_card(doc, &linked_card_id, &from, &target_col_id);
-                        card_to_col.insert(linked_card_id.clone(), target_col_id.clone());
+                        if let Err(e) = monotask_core::column::move_card(doc, &linked_card_id, &from, &target_col_id) {
+                            result.errors.push(format!("move_card {linked_card_id}: {e}"));
+                        } else {
+                            card_to_col.insert(linked_card_id.clone(), target_col_id.clone());
+                        }
                     }
                 }
             }
@@ -921,8 +953,9 @@ pub async fn sync_board(
         let label_ids = resolve_label_ids(&client, &config.team_id, &issue_labels, &mut result).await;
 
         // Build priority
-        let priority = match (card.impact, card.effort) {
-            (Some(imp), Some(eff)) => compute_priority_to_linear(imp, eff),
+        let priority = match (card.direct_priority, card.impact, card.effort) {
+            (Some(p), _, _) => p,
+            (None, Some(imp), Some(eff)) => compute_priority_to_linear(imp, eff),
             _ => 0,
         };
 
@@ -1113,11 +1146,17 @@ pub async fn sync_single_linear_card(
             let desc_raw = issue.description.as_deref().unwrap_or("");
             let assignee_name = issue.assignee.as_ref().map(|a| a.name.as_str());
             let desc = build_description_with_assignee(desc_raw, assignee_name);
-            let _ = monotask_core::card::set_description(doc, card_id, &desc);
+            if let Err(e) = monotask_core::card::set_description(doc, card_id, &desc) {
+                result.errors.push(format!("set_description {card_id}: {e}"));
+            }
 
             if let Some((impact, effort)) = linear_priority_to_impact_effort(issue.priority) {
-                let _ = monotask_core::card::set_impact(doc, card_id, impact);
-                let _ = monotask_core::card::set_effort(doc, card_id, effort);
+                if let Err(e) = monotask_core::card::set_impact(doc, card_id, impact) {
+                    result.errors.push(format!("set_impact {card_id}: {e}"));
+                }
+                if let Err(e) = monotask_core::card::set_effort(doc, card_id, effort) {
+                    result.errors.push(format!("set_effort {card_id}: {e}"));
+                }
             }
 
             if let Some(from) = card_to_col.get(card_id).cloned() {
@@ -1132,7 +1171,9 @@ pub async fn sync_single_linear_card(
 
             sync_labels(doc, card_id, &issue.labels.nodes, &col_title_to_id);
             let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-            let _ = set_linear_synced_at(doc, card_id, &now);
+            if let Err(e) = set_linear_synced_at(doc, card_id, &now) {
+                result.errors.push(format!("set_linear_synced_at {card_id}: {e}"));
+            }
             result.pulled += 1;
         }
 

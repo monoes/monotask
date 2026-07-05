@@ -369,6 +369,15 @@ monotask ai-help --section workflows  # Just the shell script recipes
 monotask ai-help --section gotchas    # Just the edge cases and traps
 ```
 
+### Headless-friendly integrations
+
+- **Gmail/Outlook OAuth without a browser redirect**: pass `--no-wait` to `mail gmail-connect` / `mail outlook-connect` to print the auth URL and return immediately (instead of blocking on a local browser redirect), then finish the flow with `mail oauth-complete --provider <gmail|outlook> --code <CODE>` once you have the authorization code. This is the recommended path for agents; the plain (no `--no-wait`) form still works for interactive/browser use.
+- **Secrets via stdin**: `github connect` and `linear connect` accept the token as a positional argument, but also read it from stdin when the argument is omitted — pipe the token in instead of passing it as an argument to avoid leaking it into shell history:
+  ```bash
+  echo "$GITHUB_TOKEN" | monotask github connect
+  echo "$LINEAR_API_KEY" | monotask linear connect
+  ```
+
 ### Quickest onboarding prompt
 
 Paste this at the start of any AI session that needs to manage MonoTask:

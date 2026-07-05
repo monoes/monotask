@@ -75,17 +75,19 @@ pub async fn sync_board(
             .take(config.keep_last as usize)
             .collect();
 
+        let mut added_this_contact = 0usize;
         for msg in emails_to_add {
             let text = format!("**{}**\n{}\n\n{}", msg.subject, msg.date, msg.snippet);
             let comment = monotask_core::comment::add_comment(doc, &card_id, &text, &author, None, None, None)?;
             tag_comment_message_id(doc, &card_id, &comment.id, &msg.id)?;
+            added_this_contact += 1;
             result.emails_added += 1;
         }
 
         prune_mail_comments(doc, &card_id, config.keep_last as usize)?;
 
         let last_seen = messages[0].date.clone();
-        let count = existing_ids.len() + result.emails_added;
+        let count = existing_ids.len() + added_this_contact;
         let provider = messages[0].provider.clone();
         monotask_core::field::set_card_field(doc, &card_id, &field_ids.last_seen, &last_seen)?;
         monotask_core::field::set_card_field(doc, &card_id, &field_ids.email_count, &count.to_string())?;
@@ -179,7 +181,6 @@ fn upsert_contact(
     let card = monotask_core::card::create_card(doc, col_id, &title, &actor_pk, &members)?;
     monotask_core::field::set_card_field(doc, &card.id, &field_ids.email, email_addr)?;
     monotask_core::field::apply_default_fields(doc, &card.id)?;
-    let _ = author;
     Ok((card.id, true))
 }
 
