@@ -1,3 +1,5 @@
+mod crash_report;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -2022,6 +2024,7 @@ fn exit_code_for_kind(kind: &str) -> i32 {
 }
 
 fn main() {
+    crash_report::install();
     let json = std::env::args().any(|a| a == "--json");
     let result = tokio::runtime::Runtime::new()
         .expect("failed to start tokio runtime")
