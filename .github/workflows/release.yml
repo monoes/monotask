@@ -28,8 +28,8 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p monotask-cli
       - name: Package
         run: |
-          cp target/${{ matrix.target }}/release/monotask ./monotask
-          tar -czf ${{ matrix.artifact }}.tar.gz monotask
+          cp target/${{ matrix.target }}/release/monotaskcli ./monotaskcli
+          tar -czf ${{ matrix.artifact }}.tar.gz monotaskcli
           shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
@@ -52,8 +52,8 @@ jobs:
         run: cargo build --release --target x86_64-unknown-linux-musl -p monotask-cli
       - name: Package
         run: |
-          cp target/x86_64-unknown-linux-musl/release/monotask ./monotask
-          tar -czf monotask-${{ github.ref_name }}-x86_64-linux.tar.gz monotask
+          cp target/x86_64-unknown-linux-musl/release/monotaskcli ./monotaskcli
+          tar -czf monotask-${{ github.ref_name }}-x86_64-linux.tar.gz monotaskcli
           sha256sum monotask-${{ github.ref_name }}-x86_64-linux.tar.gz > monotask-${{ github.ref_name }}-x86_64-linux.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
@@ -75,8 +75,8 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          cp target/x86_64-pc-windows-msvc/release/monotask.exe ./monotask.exe
-          7z a monotask-${{ github.ref_name }}-x86_64-windows.zip monotask.exe
+          cp target/x86_64-pc-windows-msvc/release/monotaskcli.exe ./monotaskcli.exe
+          7z a monotask-${{ github.ref_name }}-x86_64-windows.zip monotaskcli.exe
           sha256sum monotask-${{ github.ref_name }}-x86_64-windows.zip > monotask-${{ github.ref_name }}-x86_64-windows.zip.sha256
       - uses: actions/upload-artifact@v4
         with:
@@ -238,11 +238,11 @@ jobs:
             end
 
             def install
-              bin.install \"monotask\"
+              bin.install \"monotaskcli\"
             end
 
             test do
-              assert_match \"MONOTASK CLI\", shell_output(\"#{bin}/monotask ai-help\")
+              assert_match \"MONOTASK CLI\", shell_output(\"#{bin}/monotaskcli ai-help\")
             end
           end"
 

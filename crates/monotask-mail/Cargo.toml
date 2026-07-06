@@ -18,4 +18,4 @@ uuid           = { workspace = true }
 hex            = { workspace = true }
 imap           = { version = "2", features = ["native-tls"] }
 imap-proto     = "0.10"
-native-tls     = "0.2"
+native-tls     = { version = "0.2", features = ["vendored"] }
